@@ -387,9 +387,14 @@ def cancel(job_id: str, workspace: Optional[str] = None) -> Job:
 
     Example:
         job = corerun.jobs.cancel("abc123")
+
+    The route is `/stop`, not `/cancel`. This asked for `/cancel` and got a
+    404 page back -- so `corerun jobs cancel` had never once stopped a job,
+    and the only sign of it was an error that reads like a missing job rather
+    than a missing route.
     """
     client = get_client()
-    response = client.post(f"/jobs/{job_id}/cancel", workspace=workspace)
+    response = client.post(f"/jobs/{job_id}/stop", workspace=workspace)
     return Job(**response)
 
 

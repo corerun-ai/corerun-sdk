@@ -168,7 +168,13 @@ def get_job(
     if job.duration_seconds:
         console.print(f"  Duration: {_format_duration(job.duration_seconds)}")
     if job.error:
-        console.print(f"  Error: [red]{job.error}[/red]")
+        # While it is pending this is why it has not started -- an image that
+        # cannot be pulled, a node the scheduler cannot find. Calling that an
+        # error would be wrong: nothing has failed yet, and it may still run.
+        if job.status in ("pending", "starting"):
+            console.print(f"  Waiting: [yellow]{job.error}[/yellow]")
+        else:
+            console.print(f"  Error: [red]{job.error}[/red]")
     if job.exit_code is not None:
         console.print(f"  Exit Code: {job.exit_code}")
     console.print(f"  Created: {job.created_at}")

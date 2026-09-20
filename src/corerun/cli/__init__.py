@@ -44,6 +44,7 @@ from corerun.cli.clusters import app as clusters_app
 from corerun.cli.compute import app as compute_app
 from corerun.cli.datasets import app as datasets_app
 from corerun.cli.endpoints import app as endpoints_app
+from corerun.cli.evaluations import app as evaluations_app
 from corerun.cli.genai import app as genai_app
 from corerun.cli.finetune import app as finetune_app
 from corerun.cli.hosts import app as hosts_app
@@ -95,6 +96,7 @@ app.add_typer(skills_app, name="skills", help="corerun skills for coding agents"
 app.add_typer(traces_app, name="traces", help="Trace management")
 app.add_typer(finetune_app, name="finetune", help="Fine-tuning jobs")
 app.add_typer(genai_app, name="genai", help="Agent traces, sessions and retention")
+app.add_typer(evaluations_app, name="evaluations", help="Run benchmarks against a model")
 app.add_typer(inference_app, name="inference", help="Inference servers")
 app.add_typer(endpoints_app, name="endpoints", help="Model endpoints")
 app.add_typer(catalogue_app, name="catalogue", help="Models available from the catalogue")
