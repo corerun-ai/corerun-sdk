@@ -184,3 +184,37 @@ def test_cancel_posts_to_the_route_the_api_serves(wire):
 
     path = wire["seen"][-1].url.path
     assert path.endswith("/jobs/job-1/stop"), f"cancel posted to {path}"
+
+
+def test_logs_and_stop_use_the_evaluations_routes(wire):
+    """Not the jobs routes, and this is the whole point of them existing.
+
+    `/api/v1/jobs` is refused in a GenAI workspace on the `training`
+    capability, which that onboarding preset does not grant. An evaluation
+    started there could be neither watched nor stopped, and the CLI printed
+    `corerun jobs logs <id>` as the next step.
+    """
+    from corerun import evaluations as api
+
+    try:
+        api.logs("job-1")
+    except Exception:  # noqa: BLE001 — the fixture's reply shape is not under test
+        pass
+    assert wire["seen"][-1].url.path.endswith("/evaluations/job-1/logs")
+
+    try:
+        api.stop("job-1")
+    except Exception:  # noqa: BLE001
+        pass
+    assert wire["seen"][-1].url.path.endswith("/evaluations/job-1/stop")
+
+
+def test_the_printed_next_step_is_reachable_where_evaluations_run(wire):
+    """The hint has to name a command that works in a GenAI workspace."""
+    result = runner.invoke(
+        app,
+        ["evaluations", "start", "gsm8k", "--compute", "c", "--endpoint", "nova", "--limit", "5"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "corerun evaluations logs" in result.output
+    assert "corerun jobs logs" not in result.output

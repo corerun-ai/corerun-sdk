@@ -5,6 +5,8 @@ Which workspace a command acts on is the single piece of context every other
 command inherits, so it gets its own place rather than living inside auth.
 """
 
+from typing import Optional
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -248,7 +250,21 @@ def show_workspace():
 
 # The capability keys the platform recognises, in the order the console lists
 # them. Kept here rather than fetched so `--help` can name them offline.
-CAPABILITIES = ("notebooks", "training", "models", "datasets", "images", "endpoints")
+#
+# Must match models.AllCapabilities. It did not: `experiments` and `traces`
+# were added when GenAI workspaces arrived and never reached this list, so the
+# CLI rejected as "unknown capability" two keys the platform not only knows but
+# gates its whole GenAI surface on.
+CAPABILITIES = (
+    "notebooks",
+    "training",
+    "models",
+    "datasets",
+    "images",
+    "endpoints",
+    "experiments",
+    "traces",
+)
 
 
 @app.command("create")
@@ -404,3 +420,91 @@ def _message(response) -> str:
         return body.get("message") or body.get("error") or response.text
     except Exception:
         return f"{response.status_code} {response.text}"
+
+
+@app.command("edit")
+def edit_workspace(
+    slug: str = typer.Argument(..., help="The workspace to change"),
+    name: Optional[str] = typer.Option(None, "--name", help="New display name"),
+    kind: Optional[str] = typer.Option(
+        None, "--kind", help="ml or genai — which console rail this workspace draws"
+    ),
+    capabilities: Optional[str] = typer.Option(
+        None,
+        "--capabilities",
+        "-c",
+        help=f"The complete set, comma-separated, from: {', '.join(CAPABILITIES)}",
+    ),
+):
+    """Change a workspace.
+
+    `--capabilities` is the whole set, not an addition: what you pass is what
+    the workspace ends up with, and anything you leave out is withdrawn. That
+    is deliberate — it is the only phrasing where what you typed and what you
+    get are the same thing.
+
+    Withdrawing one takes effect immediately and stops every request for that
+    family, answering 404 because from then on the resource genuinely is not
+    there. The data is not deleted; granting it back brings it into view.
+
+    Example:
+        corerun ws edit research --name "ML Research"
+        corerun ws edit genai-dev --capabilities experiments,traces,datasets,endpoints,training
+    """
+    import httpx
+
+    if name is None and kind is None and capabilities is None:
+        console.print("[yellow]Nothing to change.[/yellow] Pass --name, --kind or --capabilities.")
+        raise typer.Exit(1)
+
+    config = _require_credentials()
+
+    try:
+        workspaces = fetch(config.api_url, config.auth_token, config.verify_ssl)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    workspace = resolve(workspaces, slug)
+    if workspace is None:
+        console.print(f"[red]Error:[/red] no workspace called {slug!r}")
+        console.print("  Run 'corerun ws list' to see the ones you belong to.")
+        raise typer.Exit(1)
+
+    payload: dict = {}
+    if name is not None:
+        payload["display_name"] = name
+    if kind is not None:
+        if kind not in ("ml", "genai"):
+            console.print("[red]Error:[/red] --kind must be ml or genai")
+            raise typer.Exit(1)
+        payload["kind"] = kind
+    if capabilities is not None:
+        wanted = [c.strip().lower() for c in capabilities.split(",") if c.strip()]
+        unknown = [c for c in wanted if c not in CAPABILITIES]
+        if unknown:
+            console.print(f"[red]Error:[/red] unknown capability: {', '.join(unknown)}")
+            console.print(f"  Known: {', '.join(CAPABILITIES)}")
+            raise typer.Exit(1)
+        payload["capabilities"] = wanted
+
+    url = config.api_url.rstrip("/") + f"/workspaces/{workspace['id']}"
+    try:
+        response = httpx.put(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {config.auth_token}"},
+            timeout=config.timeout,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        console.print(f"[red]Error:[/red] {e.response.text}")
+        raise typer.Exit(1)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    updated = response.json()
+    console.print(f"[green]Updated[/green] {updated.get('display_name') or slug}")
+    console.print(f"  kind          {updated.get('kind')}")
+    console.print(f"  capabilities  {', '.join(updated.get('capabilities') or [])}")

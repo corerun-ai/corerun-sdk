@@ -190,3 +190,30 @@ def evaluation(evaluation_id: str, *, workspace: Optional[str] = None) -> Evalua
     return Evaluation.from_json(
         get_client().get(f"{_BASE}/{evaluation_id}", workspace=workspace)
     )
+
+
+def logs(evaluation_id: str, *, workspace: Optional[str] = None) -> str:
+    """What the runner printed.
+
+    Served by the evaluations routes rather than the job ones, and that is not
+    a stylistic choice: `/api/v1/jobs` does not exist in a GenAI workspace --
+    the gateway refuses it on the `training` capability, which that preset does
+    not grant -- so `corerun jobs logs` cannot work in the kind of workspace
+    most likely to be running an evaluation.
+    """
+    payload = get_client().get(f"{_BASE}/{evaluation_id}/logs", workspace=workspace)
+    if isinstance(payload, dict):
+        return payload.get("logs", "") or ""
+    return str(payload)
+
+
+def stop(evaluation_id: str, *, workspace: Optional[str] = None) -> Evaluation:
+    """Cancel a running evaluation.
+
+    Worth knowing where the money goes: stopping ends the job, and the run it
+    was writing to is left as it stands rather than deleted -- a partial score
+    over the examples that did finish is still a fact about the model.
+    """
+    return Evaluation.from_json(
+        get_client().post(f"{_BASE}/{evaluation_id}/stop", workspace=workspace)
+    )

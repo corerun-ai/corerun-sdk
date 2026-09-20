@@ -23,6 +23,7 @@ src/corerun/notebooks.py
 src/corerun/pull.py
 src/corerun/quota.py
 src/corerun/registry.py
+src/corerun/tokens.py
 src/corerun.egg-info/PKG-INFO
 src/corerun.egg-info/SOURCES.txt
 src/corerun.egg-info/dependency_links.txt
@@ -51,6 +52,7 @@ src/corerun/cli/registry.py
 src/corerun/cli/resolve.py
 src/corerun/cli/skills.py
 src/corerun/cli/storage.py
+src/corerun/cli/tokens.py
 src/corerun/cli/traces.py
 src/corerun/cli/workspace.py
 src/corerun/skills/README.md
@@ -78,3 +80,4 @@ tests/test_null_collections.py
 tests/test_skills_match_cli.py
 tests/test_tenant_resolution.py
 tests/test_token_refresh.py
+tests/test_workspace_capabilities.py

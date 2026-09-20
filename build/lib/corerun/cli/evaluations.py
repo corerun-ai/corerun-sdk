@@ -122,7 +122,7 @@ def start_evaluation(
     # has the logs, the other will have the scores.
     console.print(f"  run {started.run_id}  (scores land here)")
     console.print()
-    console.print(f"  corerun jobs logs {started.id}")
+    console.print(f"  corerun evaluations logs {started.id}")
     if limit is None:
         console.print(
             "[yellow]No limit set[/yellow] — this runs the whole benchmark, "
@@ -189,6 +189,42 @@ def show_evaluation(
             console.print(f"  [red]error[/red]      {row.error}")
 
     console.print()
-    console.print(f"  logs:   corerun jobs logs {row.id}")
+    console.print(f"  logs:   corerun evaluations logs {row.id}")
     if row.run_id:
         console.print(f"  scores: corerun genai evaluations -e {row.experiment_id or '<experiment>'}")
+
+
+@app.command("logs")
+def evaluation_logs(
+    evaluation_id: str = typer.Argument(..., help="The job id from `start`"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w"),
+):
+    """What the runner printed.
+
+    Not `corerun jobs logs`: that route does not exist in a GenAI workspace,
+    which is where evaluations usually run.
+    """
+    _init_client()
+    from corerun import evaluations as api
+
+    output = _called(lambda: api.logs(evaluation_id, workspace=workspace))
+    if not output.strip():
+        console.print("[yellow]No output yet.[/yellow] The runner may still be starting.")
+        return
+    # Printed raw. It is a benchmark's own output, and rich would try to read
+    # its brackets and progress bars as markup.
+    print(output)
+
+
+@app.command("stop")
+def stop_evaluation(
+    evaluation_id: str = typer.Argument(..., help="The job id from `start`"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w"),
+):
+    """Cancel a running evaluation."""
+    _init_client()
+    from corerun import evaluations as api
+
+    _called(lambda: api.stop(evaluation_id, workspace=workspace))
+    console.print(f"[green]Stopped[/green] {evaluation_id}")
+    console.print("  The run keeps whatever it had already scored.")
