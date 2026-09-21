@@ -425,3 +425,141 @@ def test_a_bar_sits_where_the_span_ran_not_at_the_left():
     late = _bar(0.5, 1.0, 20)
     assert late.startswith(" ")
     assert late.index("█") >= 9
+
+
+# ── Issue detection ──────────────────────────────────────────────────────────
+
+
+AJAX3 = "/api/v1/genai/ajax-api/3.0/mlflow"
+
+
+def test_detection_sends_the_provider_the_engine_demands(wire):
+    """`provider` is required and unused on this path.
+
+    With `endpoint_name` the model is built as `gateway:/<name>` and the
+    provider is read nowhere. The request schema marks it required anyway, so
+    omitting it is refused with "Missing value for required parameter
+    'provider'" -- on the one path where it means nothing.
+    """
+    genai.detect_issues(experiment=EXPERIMENT, endpoint="qwen27b", trace_ids=[TRACE_ID])
+
+    sent = wire["seen"][-1]
+    assert sent.url.path == f"{AJAX3}/issues/invoke"
+    body = json.loads(sent.content)
+    assert body["provider"] == "gateway"
+    assert body["endpoint_name"] == "qwen27b"
+    assert body["trace_ids"] == [TRACE_ID]
+
+
+def test_omitting_categories_asks_for_all_six(wire):
+    genai.detect_issues(experiment=EXPERIMENT, endpoint="qwen27b", trace_ids=[TRACE_ID])
+    assert json.loads(wire["seen"][-1].content)["categories"] == list(genai.ISSUE_CATEGORIES)
+
+
+def test_a_misspelt_category_is_refused_before_anything_is_spent(wire):
+    """The whole point of checking locally.
+
+    A category the engine does not define is not an error there -- it judges
+    the ones it recognises and silently drops the rest, so a typo costs a full
+    run and returns less than was asked for, with nothing saying why.
+    """
+    with pytest.raises(ValueError, match="relevence"):
+        genai.detect_issues(
+            experiment=EXPERIMENT,
+            endpoint="qwen27b",
+            trace_ids=[TRACE_ID],
+            categories=["relevence"],
+        )
+
+    # And nothing was sent.
+    assert not any("issues/invoke" in r.url.path for r in wire["seen"])
+
+
+def test_no_traces_is_refused_rather_than_sent_as_an_empty_batch(wire):
+    wire["respond"] = lambda request: httpx.Response(200, json={"traces": []})
+    with pytest.raises(ValueError, match="No traces"):
+        genai.detect_issues(experiment=EXPERIMENT, endpoint="qwen27b")
+
+
+def test_the_batch_is_capped_at_what_the_engine_accepts(wire):
+    genai.detect_issues(
+        experiment=EXPERIMENT,
+        endpoint="qwen27b",
+        trace_ids=[f"tr-{n:032x}" for n in range(genai.MAX_TRACES_PER_DETECTION + 40)],
+    )
+    sent = json.loads(wire["seen"][-1].content)
+    assert len(sent["trace_ids"]) == genai.MAX_TRACES_PER_DETECTION
+
+
+def test_a_failure_arriving_as_the_result_is_reported_as_an_error(wire):
+    """The engine puts the exception in `result`, not in `error`.
+
+    A caller reading `.result` would print a traceback as though it were a
+    finding, and one checking `.error` would see None and call it a success.
+    """
+    wire["respond"] = lambda request: httpx.Response(200, json={
+        "status": "FAILED",
+        "result": "MlflowException('Failed to call LLM endpoint at http://0.0.0.0:5000/...')",
+    })
+
+    state = genai.detection("job-1")
+    assert state.failed
+    assert state.result is None
+    assert "Failed to call LLM endpoint" in state.error
+
+
+def test_a_real_result_is_left_as_a_result(wire):
+    wire["respond"] = lambda request: httpx.Response(200, json={
+        "status": "SUCCEEDED",
+        "result": "Analyzed 5 traces. Found 2 issues:",
+    })
+
+    state = genai.detection("job-1")
+    assert state.finished and not state.failed
+    assert state.error is None
+    assert state.result.startswith("Analyzed 5 traces")
+
+
+def test_the_run_is_returned_so_it_can_be_opened_while_it_runs(wire):
+    """The run exists before the job starts, which is what makes it linkable."""
+    wire["respond"] = lambda request: httpx.Response(
+        200, json={"job_id": "job-1", "run_id": "run-9"}
+    )
+
+    started = genai.detect_issues(
+        experiment=EXPERIMENT, endpoint="qwen27b", trace_ids=[TRACE_ID]
+    )
+    assert started.job_id == "job-1"
+    assert started.run_id == "run-9"
+
+
+def test_cli_detect_prints_what_it_will_spend(wire):
+    # Two paths are involved: the sample is read first, then the job started.
+    def respond(request):
+        if request.url.path.endswith("/traces/search"):
+            return httpx.Response(200, json={"traces": [TRACE_INFO]})
+        return httpx.Response(200, json={"job_id": "job-1", "run_id": "run-9"})
+
+    wire["respond"] = respond
+
+    result = runner.invoke(
+        app,
+        ["genai", "issues", "detect", EXPERIMENT, "--endpoint", "qwen27b",
+         "-c", "correctness,safety", "-n", "10"],
+    )
+    assert result.exit_code == 0, result.output
+    # 10 traces x 2 categories, said before the call rather than after the bill.
+    assert "20 judgements" in result.output
+    assert "run-9" in result.output
+
+
+def test_cli_show_exits_non_zero_on_a_failed_detection(wire):
+    """So a script that runs one finds out."""
+    wire["respond"] = lambda request: httpx.Response(200, json={
+        "status": "FAILED",
+        "result": "MlflowException('GatewayEndpoint not found')",
+    })
+
+    result = runner.invoke(app, ["genai", "issues", "show", "job-1"])
+    assert result.exit_code == 1
+    assert "GatewayEndpoint not found" in result.output

@@ -20,9 +20,11 @@ app = typer.Typer(help="Agent traces, sessions and judges")
 traces_app = typer.Typer(help="Agent traces")
 sessions_app = typer.Typer(help="Conversations, grouped by session id")
 review_app = typer.Typer(help="Review queues: traces somebody was asked to look at")
+issues_app = typer.Typer(help="Read traces with a model and file what it finds")
 app.add_typer(traces_app, name="traces")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(review_app, name="review")
+app.add_typer(issues_app, name="issues")
 
 
 def _init_client():
@@ -643,3 +645,125 @@ def decide_review_item(
 
     _called(lambda: genai.review(queue_id, trace_id, status, by=by, workspace=workspace))
     console.print(f"[green]Recorded[/green] {status.lower()} for {trace_id[:20]}")
+
+
+@issues_app.command("detect")
+def detect_issues(
+    experiment: str = typer.Argument(..., help="The experiment id whose traces to read"),
+    endpoint: str = typer.Option(..., "--endpoint", "-e", help="The endpoint that judges"),
+    categories: Optional[str] = typer.Option(
+        None,
+        "--categories",
+        "-c",
+        help="Comma-separated. Omit for all six. See `corerun genai issues categories`.",
+    ),
+    sample: int = typer.Option(25, "--sample", "-n", help="How many recent traces to read"),
+    trace: Optional[List[str]] = typer.Option(
+        None, "--trace", "-t", help="A specific trace. Repeatable; overrides --sample."
+    ),
+    wait: bool = typer.Option(False, "--wait", help="Stay until it finishes"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w"),
+):
+    """Read a sample of traces with a model, and file what it finds.
+
+    The findings are written as assessments on the traces, so they appear
+    beside every other score rather than in a report of their own.
+
+    It costs model calls: one per trace per category. The numbers are printed
+    before the call so the size of that is visible rather than implied.
+
+    Example:
+        corerun genai issues detect 13 --endpoint qwen27b -c correctness -n 10
+    """
+    _init_client()
+    from corerun import genai as api
+
+    wanted = [c.strip() for c in categories.split(",") if c.strip()] if categories else list(api.ISSUE_CATEGORIES)
+    count = len(trace) if trace else sample
+    console.print(
+        f"Reading [bold]{count}[/bold] traces against "
+        f"[bold]{len(wanted)}[/bold] categories — {count * len(wanted)} judgements on {endpoint}."
+    )
+
+    started = _called(
+        lambda: api.detect_issues(
+            experiment=experiment,
+            endpoint=endpoint,
+            trace_ids=list(trace) if trace else None,
+            categories=wanted,
+            sample=sample,
+            workspace=workspace,
+        )
+    )
+
+    console.print(f"[green]Started[/green] {started.job_id}")
+    if started.run_id:
+        console.print(f"  run      {started.run_id}")
+    console.print(f"  progress corerun genai issues show {started.job_id}")
+
+    if not wait:
+        return
+
+    import time
+
+    while True:
+        time.sleep(10)
+        state = _called(lambda: api.detection(started.job_id, workspace=workspace))
+        if not state.finished:
+            continue
+        _print_detection(state)
+        # A failed detection is a failed command: something scripting this
+        # needs to hear about it in the exit code, not only on the screen.
+        raise typer.Exit(1 if state.failed else 0)
+
+
+@issues_app.command("show")
+def show_detection(
+    job_id: str = typer.Argument(..., help="The job id from `issues detect`"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w"),
+):
+    """How a detection is getting on, and what it found."""
+    _init_client()
+    from corerun import genai as api
+
+    state = _called(lambda: api.detection(job_id, workspace=workspace))
+    _print_detection(state)
+    if state.failed:
+        raise typer.Exit(1)
+
+
+def _print_detection(state) -> None:
+    console.print(f"[bold]{state.job_id}[/bold]  {state.status or 'unknown'}")
+    if state.run_id:
+        console.print(f"  run    {state.run_id}")
+    if state.error:
+        # The engine's own sentence. The useful part is usually at the end --
+        # which endpoint could not be reached, which model was refused -- so it
+        # is printed rather than replaced with a summary of it.
+        console.print(f"[red]Error:[/red] {state.error}")
+        return
+    if state.result:
+        console.print(state.result if isinstance(state.result, str) else str(state.result))
+    elif state.finished:
+        console.print("  Nothing was filed. The traces read clean, or none matched.")
+
+
+@issues_app.command("categories")
+def issue_categories():
+    """The dimensions a trace can be judged against."""
+    from corerun import genai as api
+
+    detail = {
+        "correctness": "Factually accurate and grounded in the data it was given",
+        "latency": "Answers within acceptable time",
+        "execution": "Tool calls and API steps actually complete",
+        "adherence": "Follows instructions, constraints and formatting",
+        "relevance": "Addresses what was asked, and leaves the asker satisfied",
+        "safety": "Avoids harmful, sensitive or inappropriate content",
+    }
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Category")
+    table.add_column("What it looks for")
+    for name in api.ISSUE_CATEGORIES:
+        table.add_row(name, detail.get(name, ""))
+    console.print(table)

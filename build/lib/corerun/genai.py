@@ -58,6 +58,24 @@ from corerun.config import get_client
 _V2 = "/genai/api/2.0/mlflow"
 _V3 = "/genai/api/3.0/mlflow"
 _AJAX2 = "/genai/ajax-api/2.0/mlflow"
+_AJAX3 = "/genai/ajax-api/3.0/mlflow"
+
+# The six dimensions a trace is judged against, in the engine's own spelling.
+#
+# Listed here rather than fetched so `--categories` can be validated before a
+# call is made, and so a name the engine stops accepting fails where somebody
+# can read it rather than by quietly finding nothing.
+ISSUE_CATEGORIES = (
+    "correctness",
+    "latency",
+    "execution",
+    "adherence",
+    "relevance",
+    "safety",
+)
+
+# The engine refuses a larger batch in one invocation.
+MAX_TRACES_PER_DETECTION = 100
 
 # Where the engine keeps the session id and the token counts: metadata keys,
 # not columns.
@@ -780,4 +798,121 @@ def assess(
 
     return get_client().post(
         f"{_V3}/traces/{trace_id}/assessments", json={"assessment": assessment}, workspace=workspace
+    )
+
+
+@dataclass
+class IssueDetection:
+    """A detection job, and the run its findings are written into.
+
+    Two identifiers because they answer different questions: `job_id` is
+    whether the work is still going, `run_id` is where the result lives. The
+    run exists from the moment the job is accepted, so it can be opened while
+    the judge is still working.
+    """
+
+    job_id: str
+    run_id: Optional[str] = None
+    status: Optional[str] = None
+    result: Any = None
+    error: Optional[str] = None
+
+    @property
+    def finished(self) -> bool:
+        return (self.status or "").upper() in {"SUCCEEDED", "FAILED", "DONE", "TIMEOUT"}
+
+    @property
+    def failed(self) -> bool:
+        return (self.status or "").upper() in {"FAILED", "TIMEOUT"}
+
+
+def detect_issues(
+    *,
+    experiment: str,
+    endpoint: str,
+    trace_ids: Optional[List[str]] = None,
+    categories: Optional[List[str]] = None,
+    sample: int = 25,
+    workspace: Optional[str] = None,
+) -> IssueDetection:
+    """Read a sample of traces with a model, and file what it finds.
+
+    The findings are written as assessments on the traces themselves, which is
+    why nothing is returned here but a handle: they show up beside every other
+    score rather than in a report of their own.
+
+    `endpoint` is a corerun inference endpoint. It has to be one the engine can
+    call itself, which every endpoint on this platform is -- they are
+    registered with the engine when they are created.
+
+    A sample, always. `sample` traces across `categories` dimensions is that
+    many judgements on somebody's GPU, and a default meaning "all of them"
+    would be a bill nobody agreed to. Pass `trace_ids` to choose exactly.
+
+    Args:
+        experiment: The experiment id whose traces to read.
+        endpoint: The endpoint that judges, by name.
+        trace_ids: Specific traces. Omit to take the most recent `sample`.
+        categories: Which dimensions to judge. Omit for all six.
+        sample: How many recent traces to read when `trace_ids` is omitted.
+
+    Raises:
+        ValueError: if a category is not one the engine defines, or there is
+            nothing to read.
+    """
+    wanted = list(categories or ISSUE_CATEGORIES)
+    unknown = [c for c in wanted if c not in ISSUE_CATEGORIES]
+    if unknown:
+        raise ValueError(
+            f"Unknown {'category' if len(unknown) == 1 else 'categories'}: "
+            f"{', '.join(unknown)}. Choose from: {', '.join(ISSUE_CATEGORIES)}"
+        )
+
+    ids = list(trace_ids or [])
+    if not ids:
+        # Recent rather than random: the question is nearly always "is it going
+        # wrong now", and a random draw over a month answers a different one.
+        ids = [t.trace_id for t in traces(experiment=experiment, limit=sample, workspace=workspace)]
+    ids = ids[:MAX_TRACES_PER_DETECTION]
+
+    if not ids:
+        raise ValueError(f"No traces to read in experiment {experiment}.")
+
+    payload = get_client().post(
+        f"{_AJAX3}/issues/invoke",
+        json={
+            "experiment_id": experiment,
+            "trace_ids": ids,
+            "categories": wanted,
+            "endpoint_name": endpoint,
+            # Required by the engine's validator and read nowhere on this path:
+            # with `endpoint_name` the model is built as `gateway:/<name>`. Sent
+            # as `gateway` to say what is actually happening rather than to name
+            # a vendor that is not involved.
+            "provider": "gateway",
+        },
+        workspace=workspace,
+    )
+    return IssueDetection(
+        job_id=payload.get("job_id", ""),
+        run_id=payload.get("run_id"),
+    )
+
+
+def detection(job_id: str, *, workspace: Optional[str] = None) -> IssueDetection:
+    """How a detection job is getting on, and what it found if it is done."""
+    payload = get_client().get(f"{_AJAX3}/jobs/{job_id}", workspace=workspace)
+    result = payload.get("result")
+    # A failure arrives as the result rather than as an error field, spelled as
+    # the engine's own exception repr. Reported as an error, because a caller
+    # checking `.result` would otherwise read a traceback as a finding.
+    error = payload.get("error")
+    if error is None and isinstance(result, str) and result.startswith("MlflowException("):
+        error, result = result, None
+    return IssueDetection(
+        job_id=job_id,
+        run_id=payload.get("run_id"),
+        status=payload.get("status"),
+        result=result,
+        error=error,
     )
