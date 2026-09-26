@@ -4,11 +4,31 @@ Python SDK and CLI for the corerun ML Platform.
 
 ## Installation
 
+The CLI, the corerun skills for your coding agents (Claude Code, opencode, pi,
+Codex), and sign-in, in one line -- served by your corerun platform, with its
+address and a CLI built from the same commit filled in; the console's Home page
+shows it:
+
 ```bash
-uv tool install "git+https://github.com/corerunai/corerun-sdk.git"
+curl -fsSL https://<console>/api/v1/cli/install.sh | sh        # macOS, Linux
+irm https://<console>/api/v1/cli/install.ps1 | iex             # Windows (PowerShell)
 ```
 
-`pip install "git+https://github.com/corerunai/corerun-sdk.git"` does the same.
+The same scripts are `install.sh` and `install.ps1` here; run from this
+repository they install the published CLI and sign in wherever `--url` says.
+
+It installs [uv](https://docs.astral.sh/uv/) if it is missing, then the CLI as a
+uv tool, then the skills; on a machine with no display, sign-in shows a code to
+approve in any browser (`corerun login --use-device-code`). `--agent claude`
+limits the skills to one agent, `--no-skills` skips them. Or step by step:
+
+```bash
+uv tool install "git+https://github.com/corerun-ai/corerun-sdk.git"
+corerun skills install
+corerun login --url https://<console>
+```
+
+`pip install "git+https://github.com/corerun-ai/corerun-sdk.git"` does the same.
 Not on PyPI yet; the git URL is the install until it is.
 
 From a checkout:
@@ -34,11 +54,11 @@ writes the file for you.
 
 Model endpoints are called at the address the platform reports for each one,
 which it knows better than the SDK can work out. Failing that, the address
-follows the API address: the deployment's own domain with an `api`-prefixed
-label — `https://corerun.ai/api/v1` publishes its endpoints at
-`https://api.corerun.ai`, and an environment named in the host keeps its name
-(`https://dev.corerun.ai/api/v1` → `https://api-dev.corerun.ai`, `api-dev…`
-rather than a subdomain of `dev`).
+follows the API address: `api` under the deployment's own domain, whether the
+API was reached at the domain or at its console — `https://corerun.ai/api/v1`
+and `https://console.corerun.ai/api/v1` both publish endpoints at
+`https://api.corerun.ai`, and an environment named in the host keeps its domain
+(`https://console.dev.corerun.ai/api/v1` → `https://api.dev.corerun.ai`).
 
 `CORERUN_INFERENCE_URL` exists for what neither of those can cover: a deployment
 whose callers reach the gateway on a host of its own, or behind a private load
@@ -416,11 +436,45 @@ corerun models unalias my-model challenger
 # Delete model
 corerun models delete old-model
 corerun models delete old-model --force
+```
 
-# Run inference
-corerun models predict my-model input.json --alias champion
-corerun models predict my-model image.jpg --version 1 -o result.json
-corerun models predict my-model data.csv --alias production --json
+### Serving
+
+```bash
+# Deploy a model; it is published behind an endpoint named after it
+corerun inference deploy --name nova --model Qwen/Qwen3-8B --compute dgx --gpu 1 --wait
+
+# Change how it runs (redeploys; the ID, endpoint and keys stay)
+corerun inference update <server-id> --max-model-len 32768 --gpu-memory-util 0.85
+
+# Requests, tokens, time to first token and decode speed
+corerun inference metrics <server-id> --range 7d
+
+# The address callers use, and calling it
+corerun endpoints show nova
+corerun endpoints call nova "Hello" --stream
+
+# Publish a provider's model on the same address, and change it later
+corerun endpoints add-upstream nova --model chat --base-url https://api.openai.com/v1 --api-key sk-... --as gpt-4o
+corerun endpoints edit-upstream nova chat --upstream-name gpt-4.1
+
+# Priced from the provider's list price when added by provider; override per endpoint or organisation
+corerun endpoints add-upstream nova --model gpt-4o --provider openai --api-key sk-...
+corerun prices search openai gpt-4o
+corerun endpoints price nova chat --input 2.5 --output 10 --cache-read 1.25
+corerun org prices set openai gpt-4o --input 2 --output 8
+corerun endpoints metrics nova
+```
+
+### Your organisation
+
+```bash
+# The plan, what is used against it, and model calls, tokens and spend per endpoint this month
+corerun org usage
+
+# Make signing in stricter: lifetimes, lockout, passwords, networks, countries
+corerun org security show
+corerun org security set --access-ttl 30m --lockout-attempts 5
 ```
 
 ## Configuration

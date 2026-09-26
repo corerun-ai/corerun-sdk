@@ -77,11 +77,11 @@ def test_inference_url_survives_both_merges(tmp_path, monkeypatch):
     import importlib
     import corerun.config as config
 
-    monkeypatch.setenv("CORERUN_INFERENCE_URL", "https://api-dev.corerun.ai")
+    monkeypatch.setenv("CORERUN_INFERENCE_URL", "https://api.dev.corerun.ai")
     monkeypatch.setenv("HOME", str(tmp_path))
     importlib.reload(config)
 
-    assert config.get_config().inference_url == "https://api-dev.corerun.ai"
+    assert config.get_config().inference_url == "https://api.dev.corerun.ai"
 
 
 def test_inference_url_has_no_default_and_is_overridable_by_file(tmp_path, monkeypatch):
@@ -251,24 +251,28 @@ def test_nowhere_to_call_an_endpoint_says_which_setting_to_set(monkeypatch):
 
 
 def test_the_inference_address_follows_the_api_address():
-    """The deployment's own convention: the API host's first label names the
-    environment, and the gateway is the same domain with an api-prefixed
-    label. api-dev.corerun.ai is the address their dev deployment serves
-    endpoints from, which is what makes this the shape to build."""
+    """The deployment's own layout: `corerun.ai` for production and
+    `dev.corerun.ai` for dev, with the console at `console.` and the gateway
+    at `api.` under each. The API is reached at the domain or at the console's
+    host, and the gateway is the same from both -- api.dev.corerun.ai is the
+    address the dev deployment serves endpoints from, which is what makes this
+    the shape to build."""
     from corerun.config import inference_base_from
 
     assert inference_base_from("https://corerun.ai/api/v1") == "https://api.corerun.ai"
-    assert inference_base_from("https://dev.corerun.ai/api/v1") == "https://api-dev.corerun.ai"
-    # An API already addressed at the gateway's own name is not prefixed twice,
-    # and a named environment keeps its name however deep the domain is.
-    assert inference_base_from("https://api-dev.corerun.ai/api/v1") == "https://api-dev.corerun.ai"
-    assert inference_base_from("https://eu.dev.corerun.ai/api/v1") == "https://api-eu.dev.corerun.ai"
-    # A self-hosted deployment follows the same label rule -- which may name a
-    # host nobody published, and is one of the reasons what the platform reports
-    # is trusted first.
+    assert inference_base_from("https://dev.corerun.ai/api/v1") == "https://api.dev.corerun.ai"
+    # Through the console's own host -- what `corerun login` is given and what
+    # a notebook is told -- the gateway is beside the console, not beneath it.
+    assert inference_base_from("https://console.corerun.ai/api/v1") == "https://api.corerun.ai"
+    assert inference_base_from("https://console.dev.corerun.ai/api/v1") == "https://api.dev.corerun.ai"
+    # An API already addressed at the gateway's own name is not prefixed twice.
+    assert inference_base_from("https://api.dev.corerun.ai/api/v1") == "https://api.dev.corerun.ai"
+    # A self-hosted deployment follows the same rule -- which may name a host
+    # nobody published, and is one of the reasons what the platform reports is
+    # trusted first.
     assert (
         inference_base_from("http://corerun.example.com/api/v1")
-        == "http://api-corerun.example.com"
+        == "http://api.corerun.example.com"
     )
     # The scheme follows: a deployment on plain HTTP does not become HTTPS.
     assert inference_base_from("http://corerun.internal/api/v1") == "http://api.corerun.internal"
@@ -295,7 +299,7 @@ def test_a_value_an_older_client_wrote_for_itself_is_not_a_choice(tmp_path):
 
     loaded = Config.from_file(path)
     assert loaded.inference_url == ""
-    assert loaded.inference_base == "https://api-dev.corerun.ai"
+    assert loaded.inference_base == "https://api.dev.corerun.ai"
 
     # A value somebody chose is kept, and still wins.
     path.write_text("inference_url=https://gateway.internal/inference\n")
@@ -316,7 +320,7 @@ def test_the_derived_inference_address_is_not_written_to_the_file(tmp_path, monk
 
     loaded = config.get_config()
     assert loaded.inference_url == ""
-    assert loaded.inference_base == "https://api-dev.corerun.ai"
+    assert loaded.inference_base == "https://api.dev.corerun.ai"
 
     loaded.save()
     assert "inference_url" not in (tmp_path / ".corerun" / "config").read_text()

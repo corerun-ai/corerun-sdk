@@ -179,7 +179,7 @@ def get_dataset(
 def delete_dataset(
     name: str = typer.Argument(..., help="Dataset name"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
-    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+    force: bool = typer.Option(False, "--yes", "-y", "--force", "-f", help="Do not ask for confirmation"),
 ):
     """
     Delete a dataset.
@@ -193,10 +193,7 @@ def delete_dataset(
     import corerun.datasets as datasets
 
     if not force:
-        confirm = typer.confirm(f"Delete dataset '{name}'?")
-        if not confirm:
-            console.print("Cancelled")
-            raise typer.Exit(0)
+        output.confirm(f"Delete dataset '{name}'?")
 
     try:
         datasets.delete(name, workspace=workspace)

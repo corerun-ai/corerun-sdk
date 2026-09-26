@@ -8,7 +8,7 @@ inside one.
 
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.table import Table
@@ -18,13 +18,26 @@ from corerun.cli import output
 console = output.console
 app = typer.Typer(help="corerun skills for coding agents")
 
-# Where each agent looks. The first that already exists is the default target,
-# because a directory an agent created is better evidence of what it reads than
-# anything this tool could guess.
-KNOWN_SKILL_DIRS = [
-    Path.home() / ".agents" / "skills",   # opencode, DSH, goose
-    Path.home() / ".claude" / "skills",   # Claude Code
-]
+# Where each agent reads skills from, globally: a directory holding one folder
+# per skill, each with its SKILL.md. The home of an agent -- the directory it
+# creates when it is first run -- says it is installed here.
+AGENTS = {
+    "claude": ("Claude Code", Path.home() / ".claude", Path.home() / ".claude" / "skills"),
+    "opencode": (
+        "opencode",
+        Path.home() / ".config" / "opencode",
+        Path.home() / ".config" / "opencode" / "skills",
+    ),
+    "pi": ("pi", Path.home() / ".pi", Path.home() / ".pi" / "agent" / "skills"),
+    "codex": ("Codex", Path.home() / ".codex", Path.home() / ".codex" / "skills"),
+    # The shared location several agents read (opencode, goose and others),
+    # and the one used when no agent is found at all.
+    "agents": (
+        "any agent reading ~/.agents",
+        Path.home() / ".agents",
+        Path.home() / ".agents" / "skills",
+    ),
+}
 
 
 def _bundled() -> Path:
@@ -51,11 +64,10 @@ def _describe(skill: Path) -> str:
     return ""
 
 
-def _default_target() -> Path:
-    for candidate in KNOWN_SKILL_DIRS:
-        if candidate.is_dir():
-            return candidate
-    return KNOWN_SKILL_DIRS[0]
+def _detected() -> list[str]:
+    """The agents installed on this machine, and the shared location."""
+    found = [key for key, (_, home, _) in AGENTS.items() if key != "agents" and home.is_dir()]
+    return found + ["agents"]
 
 
 @app.command("list")
@@ -76,22 +88,59 @@ def list_skills():
 
 @app.command("install")
 def install(
+    agent: Optional[List[str]] = typer.Option(
+        None,
+        "--agent",
+        "-a",
+        help="claude, opencode, pi, codex or agents; repeat for several. "
+        "Default: every agent found here, and ~/.agents/skills.",
+    ),
+    all_agents: bool = typer.Option(
+        False, "--all", help="Every agent above, whether it is installed or not."
+    ),
     dir: Optional[Path] = typer.Option(
-        None, "--dir", "-d",
-        help="Where to install. Defaults to the first agent skills directory that exists.",
+        None,
+        "--dir",
+        "-d",
+        help="Install into this directory instead, for an agent not listed.",
     ),
     force: bool = typer.Option(
-        False, "--force", "-f",
-        help="Replace skills that are already there.",
+        False,
+        "--force",
+        "-f",
+        help="Replace skills that are already there, e.g. after upgrading the CLI.",
     ),
 ):
-    """Copy the corerun skills into an agent's skills directory."""
+    """
+    Copy the corerun skills where coding agents read them.
+
+    Example:
+        corerun skills install                      # every agent found on this machine
+        corerun skills install --agent claude --force
+        corerun skills install --dir ./.claude/skills   # one project only
+    """
     skills = _available()
     if not skills:
         console.print("[red]Error:[/red] no skills are bundled with this build.")
         raise typer.Exit(1)
 
-    target = (dir or _default_target()).expanduser()
+    if dir is not None:
+        targets = [("that directory", dir.expanduser())]
+    else:
+        keys = list(AGENTS) if all_agents else (agent or _detected())
+        unknown = [k for k in keys if k not in AGENTS]
+        if unknown:
+            console.print(
+                f"[red]Error:[/red] unknown agent {', '.join(unknown)}; one of {', '.join(AGENTS)}"
+            )
+            raise typer.Exit(1)
+        targets = [(AGENTS[k][0], AGENTS[k][2]) for k in dict.fromkeys(keys)]
+
+    for label, target in targets:
+        _install_into(skills, label, target, force)
+
+
+def _install_into(skills: list[Path], label: str, target: Path, force: bool) -> None:
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -115,11 +164,7 @@ def install(
             raise typer.Exit(1)
         installed.append(skill.name)
 
-    for name in installed:
-        console.print(f"[green]installed[/green] {name}")
-    for name in skipped:
-        console.print(f"[yellow]already there[/yellow] {name}")
-
-    console.print(f"\n{len(installed)} installed in {target}")
+    line = f"[bold]{label}[/bold] ({target}): {len(installed)} installed"
     if skipped:
-        console.print("Run with --force to replace the ones already there.")
+        line += f", {len(skipped)} already there (--force replaces them)"
+    console.print(line)

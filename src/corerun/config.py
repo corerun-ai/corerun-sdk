@@ -60,12 +60,13 @@ def _is_address(host: str) -> bool:
 def inference_base_from(api_url: str) -> str:
     """Where a deployment publishes its model endpoints, given its API address.
 
-    The first label of an API host names the environment -- ``dev`` in
-    ``dev.corerun.ai`` -- and a deployment serves its gateway from the same
-    domain with an ``api``-prefixed label: ``api.corerun.ai`` for the apex,
-    ``api-dev.corerun.ai`` for an environment that is named. That is the address
-    the deployment's own configuration reaches for, so it is what an override
-    should start from.
+    A deployment's domain is ``corerun.ai`` for production and
+    ``dev.corerun.ai`` for an environment that is named; the console is
+    ``console`` under it and the gateway is ``api`` under it. The API is
+    reached at either the domain itself or the console's host, and the
+    gateway is ``api.corerun.ai`` or ``api.dev.corerun.ai`` from both. That is
+    the address the deployment's own configuration reaches for, so it is what
+    an override should start from.
 
     Empty when there is nothing to build from -- a bare name, a single label, a
     literal address -- because a guess at one of those names a host that was
@@ -86,10 +87,13 @@ def inference_base_from(api_url: str) -> str:
     if labels[0].startswith("api"):
         return f"{scheme}://{host}"
 
-    if len(labels) == 2:
-        return f"{scheme}://api.{host}"
+    # The console's host is the domain with a `console` label in front, and
+    # the gateway is the same domain with `api` in front -- not `api` in front
+    # of the console.
+    if labels[0] == "console" and len(labels) >= 3:
+        host = ".".join(labels[1:])
 
-    return f"{scheme}://api-{labels[0]}.{'.'.join(labels[1:])}"
+    return f"{scheme}://api.{host}"
 
 
 @dataclass

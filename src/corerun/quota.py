@@ -20,11 +20,17 @@ class ResourceQuota(BaseModel):
 
     used: int = 0
     limit: int = 0
+    unlimited: bool = False
 
     @property
     def is_unlimited(self) -> bool:
-        """Whether this resource has no ceiling."""
-        return self.limit == UNLIMITED
+        """Whether this resource has no ceiling.
+
+        -1 on the wire; a server from before that was settled sent 0 for a
+        limit the plan does not set, which is no ceiling too -- never a
+        ceiling of nothing.
+        """
+        return self.unlimited or self.limit <= 0
 
     @property
     def available(self) -> Optional[int]:

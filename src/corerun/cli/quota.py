@@ -61,7 +61,9 @@ def show_quota(
         output.emit(q.model_dump(mode="json"))
         return
 
-    table = Table(title="Workspace Quota")
+    # Counts are of active work: a stopped or finished workload has
+    # released its slot, so stopping one frees room at once.
+    table = Table(title="Workspace limits", caption="Used counts running and starting work only")
     table.add_column("Resource", style="cyan")
     table.add_column("Used / Limit", justify="right")
     table.add_column("Available", justify="right")

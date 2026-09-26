@@ -307,7 +307,7 @@ def remove_family(
     _init_client()
 
     if not yes and not output.json_mode():
-        typer.confirm(f"Remove the family '{family}' and every card tagged to it?", abort=True)
+        output.confirm(f"Remove the family '{family}' and every card tagged to it?")
 
     from corerun.config import get_client
 
@@ -377,7 +377,7 @@ def untag_card(
     _init_client()
 
     if not yes and not output.json_mode():
-        typer.confirm(f"Remove the tag on '{card}'?", abort=True)
+        output.confirm(f"Remove the tag on '{card}'?")
 
     params = {"card": card}
     if device_id:

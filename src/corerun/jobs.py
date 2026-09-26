@@ -21,10 +21,14 @@ Usage:
     job = corerun.jobs.submit(
         name="train-model",
         image="pytorch/pytorch:2.0.0-cuda11.7-cudnn8-runtime",
-        source_directory="./src",  # Upload local code
+        source_directory="./src",  # pushed to the workspace repository "jobs"
         command=["python", "train.py"],
         gpu=1,
     )
+
+    # Or from a repository: the workspace's own, or one on a connected host
+    job = corerun.jobs.submit(..., repo="train", ref="main", path="src")
+    job = corerun.jobs.submit(..., git_url="acme/trainer", connection="github")
 
     # Wait for completion
     job = corerun.jobs.wait(job.id)
@@ -36,141 +40,12 @@ Usage:
     jobs = corerun.jobs.list(status="running")
 """
 
-import os
 import time
-import tarfile
-import tempfile
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Union
 
 from corerun.config import get_client
 from corerun.models import Job, JobStatus, JobLogs, CreateJobRequest
-
-
-# Default patterns to exclude when creating source tarball
-DEFAULT_EXCLUDE_PATTERNS = [
-    "__pycache__",
-    "*.pyc",
-    "*.pyo",
-    ".git",
-    ".svn",
-    ".hg",
-    ".venv",
-    "venv",
-    "env",
-    ".env",
-    "node_modules",
-    ".DS_Store",
-    "*.egg-info",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".tox",
-    "*.log",
-    ".coverage",
-    "htmlcov",
-    "dist",
-    "build",
-    "*.so",
-    "*.dylib",
-]
-
-
-def _should_exclude(path: Path, exclude_patterns: List[str]) -> bool:
-    """Check if a path should be excluded based on patterns."""
-    import fnmatch
-
-    name = path.name
-    for pattern in exclude_patterns:
-        if fnmatch.fnmatch(name, pattern):
-            return True
-    return False
-
-
-def _create_source_tarball(
-    source_directory: Union[str, Path],
-    exclude_patterns: Optional[List[str]] = None,
-) -> Path:
-    """
-    Create a tar.gz archive of the source directory.
-
-    Args:
-        source_directory: Path to directory to archive
-        exclude_patterns: Patterns to exclude (defaults to common dev files)
-
-    Returns:
-        Path to the created tarball (in temp directory)
-    """
-    source_path = Path(source_directory).resolve()
-    if not source_path.is_dir():
-        raise ValueError(f"Source directory does not exist: {source_directory}")
-
-    if exclude_patterns is None:
-        exclude_patterns = DEFAULT_EXCLUDE_PATTERNS
-
-    # Create tarball in temp directory
-    temp_dir = tempfile.mkdtemp(prefix="corerun_")
-    tarball_path = Path(temp_dir) / "source.tar.gz"
-
-    def filter_fn(tarinfo):
-        """Filter function for tarfile to exclude patterns."""
-        path = Path(tarinfo.name)
-        if _should_exclude(path, exclude_patterns):
-            return None
-        return tarinfo
-
-    with tarfile.open(tarball_path, "w:gz") as tar:
-        # Add files with relative paths
-        for item in source_path.iterdir():
-            if not _should_exclude(item, exclude_patterns):
-                tar.add(
-                    item,
-                    arcname=item.name,
-                    filter=filter_fn,
-                )
-
-    return tarball_path
-
-
-def _upload_source_code(
-    tarball_path: Path,
-    job_name: str,
-    workspace: Optional[str] = None,
-) -> str:
-    """
-    Upload source code tarball to storage.
-
-    Args:
-        tarball_path: Path to the tarball file
-        job_name: Name of the job (used in storage path)
-        workspace: Workspace ID
-
-    Returns:
-        Storage path where code was uploaded
-    """
-    client = get_client()
-
-    # Read the tarball
-    with open(tarball_path, "rb") as f:
-        tarball_data = f.read()
-
-    # Upload via multipart form
-    import io
-
-    files = {
-        "file": ("source.tar.gz", io.BytesIO(tarball_data), "application/gzip"),
-    }
-    data = {
-        "job_name": job_name,
-    }
-
-    response = client.post(
-        "/jobs/upload-code",
-        files=files,
-        data=data,
-        workspace=workspace,
-    )
-
-    return response.get("code_path", "")
 
 
 def list(
@@ -234,6 +109,57 @@ def get(job_id: str, workspace: Optional[str] = None) -> Job:
     return Job(**response)
 
 
+def _code_source(
+    name: str,
+    source_directory: Optional[Union[str, Path]],
+    exclude_patterns: Optional[List[str]],
+    repo: Optional[str],
+    git_url: Optional[str],
+    connection: Optional[str],
+    ref: Optional[str],
+    path: Optional[str],
+    workspace: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Where the job's code comes from, as the API takes it.
+
+    A local directory is pushed first, and the job is pinned to the commit
+    that push made, so what runs is exactly what was on disk at submit.
+    """
+    from corerun import repos
+
+    if git_url and (repo or source_directory):
+        raise ValueError("git_url names another host's repository; it cannot be combined with repo or source_directory")
+    if source_directory is not None:
+        target = repo or "jobs"
+        repos.ensure(target, workspace=workspace)
+        commit = repos.push(
+            target,
+            source_directory,
+            branch=ref or f"job/{name}",
+            message=f"job {name}",
+            excludes=exclude_patterns,
+            workspace=workspace,
+        )
+        return {"source": "repo", "repo": target, "ref": commit, "path": path}
+    if repo:
+        return {"source": "repo", "repo": repo, "ref": ref, "path": path}
+    if git_url:
+        code: Dict[str, Any] = {"source": "git", "url": git_url, "ref": ref, "path": path}
+        if connection:
+            code["connection_id"] = _connection_id(connection, workspace)
+        return code
+    return None
+
+
+def _connection_id(reference: str, workspace: Optional[str]) -> str:
+    """A git connection's ID from its name or its ID."""
+    found = get_client().get("/git-connections", workspace=workspace).get("connections") or []
+    for c in found:
+        if reference in (c.get("id"), c.get("name")):
+            return c["id"]
+    raise ValueError(f"no git connection named {reference!r} in this workspace or its organisation")
+
+
 def submit(
     name: str,
     image: str,
@@ -251,6 +177,14 @@ def submit(
     working_dir: Optional[str] = None,
     exclude_patterns: Optional[List[str]] = None,
     workspace: Optional[str] = None,
+    repo: Optional[str] = None,
+    git_url: Optional[str] = None,
+    connection: Optional[str] = None,
+    ref: Optional[str] = None,
+    path: Optional[str] = None,
+    priority: Optional[str] = None,
+    max_runtime_minutes: Optional[int] = None,
+    install_requirements: Optional[bool] = None,
 ) -> Job:
     """
     Submit a new job.
@@ -268,36 +202,43 @@ def submit(
         datasets: List of dataset names to mount
         parameters: Job parameters (passed as JSON)
         config: Additional configuration
-        source_directory: Local directory containing training code to upload.
-            Code is uploaded to storage and mounted at /code in the container.
-            Common patterns like __pycache__, .git, venv are excluded.
-        working_dir: Working directory in container (default: /code if source_directory is provided)
-        exclude_patterns: Patterns to exclude when uploading source_directory.
-            Defaults to common dev files (__pycache__, .git, .venv, etc.)
+        source_directory: Local directory of training code. It is committed to
+            a workspace repository (``repo``, default "jobs") on the branch
+            ``job/<name>`` and the job clones that commit into /code.
+            The directory's .gitignore applies; see corerun.repos.DEFAULT_EXCLUDES.
+        working_dir: Working directory in container (default: /code when the
+            job has code from a repository)
+        exclude_patterns: Patterns (gitignore syntax) left out of a pushed
+            source_directory, in place of the defaults.
         workspace: Workspace ID (uses default if not specified)
+        repo: A workspace repository to clone into /code.
+        git_url: A repository on another host: "owner/name" (with a
+            connection) or a full https URL.
+        connection: The git connection (name or ID) whose token reads git_url.
+            A public https repository needs none.
+        ref: Branch, tag or commit to check out (the default branch otherwise).
+        path: A directory within the repository to use as /code.
+        priority: "low", "normal" or "high".
+        max_runtime_minutes: Stop the job after this long.
+        install_requirements: Install requirements.txt from the working
+            directory before the command. On by default when the job has code;
+            False turns it off.
 
     Returns:
         Job object
 
     Note:
-        Job outputs are automatically mounted at:
-        - /outputs      - Training outputs (models, predictions)
-        - /checkpoints  - Checkpoints for resuming training
-        - /logs         - Training logs (tensorboard, etc.)
-        - /artifacts    - Other artifacts
+        A job works on local disk, and what lasts is kept in object storage:
+        - /code         - the repository, cloned at start
+        - /outputs      - pushed to the workspace's storage when the job ends
+        - /checkpoints  - each complete checkpoint uploaded as it is written,
+                          and restored when the job starts again
+        - /scratch      - local only, gone with the job
 
         Environment variables are set:
         - CORERUN_OUTPUT_DIR=/outputs
         - CORERUN_CHECKPOINT_DIR=/checkpoints
-        - CORERUN_LOG_DIR=/logs
-        - CORERUN_ARTIFACT_DIR=/artifacts
         - CORERUN_EXPERIMENT_NAME={experiment}
-
-        If source_directory is provided:
-        - Code is uploaded to workspace storage
-        - Mounted at /code in the container
-        - Working directory defaults to /code
-        - CORERUN_CODE_DIR=/code is set
 
     Example:
         # Simple job with Docker image command
@@ -318,7 +259,7 @@ def submit(
             name="train-custom",
             image="pytorch/pytorch:2.0.0-cuda11.7-cudnn8-runtime",
             compute_name="dgx-cluster",
-            source_directory="./src",  # Upload local code
+            source_directory="./src",  # pushed to the workspace repository "jobs"
             command=["python", "train.py"],
             gpu=1,
             datasets=["mnist"],
@@ -326,28 +267,13 @@ def submit(
     """
     client = get_client()
 
-    # Handle source_directory upload
-    code_path = None
-    if source_directory is not None:
-        import shutil
+    code = _code_source(
+        name, source_directory, exclude_patterns, repo, git_url, connection, ref, path, workspace
+    )
+    if code and code["source"] != "volume" and working_dir is None:
+        working_dir = "/code"
 
-        # Create tarball of source directory
-        tarball_path = _create_source_tarball(source_directory, exclude_patterns)
-        try:
-            # Upload to storage
-            code_path = _upload_source_code(tarball_path, name, workspace)
-        finally:
-            # Clean up temp tarball
-            shutil.rmtree(tarball_path.parent, ignore_errors=True)
-
-        # Set working directory to /code if not specified
-        if working_dir is None:
-            working_dir = "/code"
-
-    # Build config with code_path and working_dir if set
     job_config = config.copy() if config else {}
-    if code_path:
-        job_config["code_path"] = code_path
     if working_dir:
         job_config["working_dir"] = working_dir
 
@@ -364,6 +290,10 @@ def submit(
         datasets=datasets,
         parameters=parameters,
         config=job_config if job_config else None,
+        code=code,
+        priority=priority,
+        max_runtime_minutes=max_runtime_minutes,
+        install_requirements=install_requirements,
     )
 
     response = client.post(
@@ -539,9 +469,9 @@ def run(
         datasets: Datasets to mount
         parameters: Job parameters
         config: Additional configuration
-        source_directory: Local directory containing training code to upload
+        source_directory: Local directory of training code, pushed to a workspace repository
         working_dir: Working directory in container
-        exclude_patterns: Patterns to exclude when uploading source_directory
+        exclude_patterns: Patterns (gitignore syntax) left out of a pushed source_directory
         timeout: Maximum wait time
         workspace: Workspace ID
 

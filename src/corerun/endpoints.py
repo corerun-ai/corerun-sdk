@@ -30,6 +30,7 @@ Usage:
 
 from contextlib import contextmanager
 from typing import Callable, Any, Dict, List, Optional
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, field_validator
@@ -163,6 +164,13 @@ class PublishedModel(BaseModel):
     upstream_name: str = ""
     runs_on: str = ""
     accelerator: str = ""
+    # What it costs from now on, in US dollars per million tokens: input,
+    # output, and cache_read / cache_write when priced apart. None when
+    # nobody priced it.
+    pricing: Optional[Dict[str, float]] = None
+    # Where that price came from: {"level": "endpoint" | "organisation" |
+    # "list", "as_of": ...}.
+    pricing_source: Optional[Dict[str, Any]] = None
 
     @property
     def is_external(self) -> bool:
@@ -287,10 +295,11 @@ def add_upstream(
     name: str,
     *,
     model: str,
-    base_url: str,
+    base_url: str = "",
     api_key: str = "",
     upstream_name: str = "",
     provider: str = "",
+    pricing: Optional[Dict[str, float]] = None,
     workspace: Optional[str] = None,
 ) -> dict:
     """
@@ -299,31 +308,128 @@ def add_upstream(
     Args:
         name: the endpoint to publish it on
         model: the name callers will ask for
-        base_url: the OpenAI-compatible root, e.g. https://api.openai.com/v1
+        base_url: the OpenAI-compatible root, e.g. https://api.openai.com/v1.
+            May be left out for a ``provider`` whose address is known
+            (``corerun.prices.providers()``).
         api_key: the provider's credential — stored encrypted, never returned
         upstream_name: what the provider is asked for, when it differs from
             ``model``. This is what lets the thing behind a name be replaced
             without anybody's code changing.
+        provider: where it runs, as ``corerun.prices.providers()`` keys it
+            ("openai", "anthropic"...): its address when ``base_url`` is left
+            out, and its list price, which prices calls unless the
+            organisation or this endpoint set another.
+        pricing: this endpoint's own price for it, as :func:`price` takes it,
+            in place of the list price.
+    """
+    body: Dict[str, Any] = {
+        "name": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "upstream_name": upstream_name,
+        "provider": provider,
+    }
+    if pricing is not None:
+        body["pricing"] = pricing
+    client = get_client()
+    return client.post(f"/inference-endpoints/{name}/upstreams", json=body, workspace=workspace)
+
+
+def _segment(model: str) -> str:
+    """A model name as one path segment: "org/model" keeps its slash encoded."""
+    return quote(model, safe="")
+
+
+def price(
+    name: str,
+    model: str,
+    *,
+    input: float,
+    output: float,
+    cache_read: Optional[float] = None,
+    cache_write: Optional[float] = None,
+    workspace: Optional[str] = None,
+) -> dict:
+    """
+    Set what a model behind an endpoint costs, in US dollars per million
+    tokens, as the provider lists it -- or an internal rate for a model the
+    platform runs. Calls are priced when they are recorded, so this applies
+    from now on and never reprices calls already made.
+
+    Args:
+        name: the endpoint
+        model: the model, as callers ask for it
+        input: per million input tokens not read from a cache
+        output: per million output tokens
+        cache_read: per million tokens read from the provider's prompt
+            cache. Left out, they are charged as input.
+        cache_write: per million tokens written to it. Left out, as input.
+    """
+    body: Dict[str, float] = {"input": input, "output": output}
+    if cache_read is not None:
+        body["cache_read"] = cache_read
+    if cache_write is not None:
+        body["cache_write"] = cache_write
+    client = get_client()
+    return client.put(f"/inference-endpoints/{name}/pricing/{_segment(model)}", json=body, workspace=workspace)
+
+
+def clear_price(name: str, model: str, workspace: Optional[str] = None) -> dict:
+    """Stop pricing a model. Calls already recorded keep their cost."""
+    client = get_client()
+    return client.delete(f"/inference-endpoints/{name}/pricing/{_segment(model)}", workspace=workspace)
+
+
+def update_upstream(
+    name: str,
+    model: str,
+    *,
+    new_name: Optional[str] = None,
+    upstream_name: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> dict:
+    """
+    Change an upstream the endpoint publishes: the name callers use, what the
+    provider is asked for, where it is, or its credential. Anything left out is
+    kept -- the stored key in particular, which is never returned.
+
+    Args:
+        name: the endpoint
+        model: the upstream's current name, as callers ask for it
+        new_name: a new name for callers to ask for
+        upstream_name: what the provider is asked for
+        base_url: the OpenAI-compatible root
+        api_key: a new provider credential
+    """
+    body = {k: v for k, v in {"name": new_name, "upstream_name": upstream_name,
+                              "base_url": base_url, "api_key": api_key}.items() if v is not None}
+    if not body:
+        raise ValueError("nothing to change: name at least one setting")
+    client = get_client()
+    return client.patch(f"/inference-endpoints/{name}/upstreams/{_segment(model)}", json=body, workspace=workspace)
+
+
+def metrics(name: str, range: str = "24h", workspace: Optional[str] = None) -> dict:
+    """
+    What every model behind an endpoint has been doing, one series each:
+    deployed servers from their own metrics, and upstream models from the
+    calls made to them. See ``corerun.inference.metrics`` for the figures.
+
+    Args:
+        name: the endpoint
+        range: 1h, 6h, 24h, 7d, 30d or 90d, within what the plan keeps
     """
     client = get_client()
-    return client.post(
-        f"/inference-endpoints/{name}/upstreams",
-        json={
-            "name": model,
-            "base_url": base_url,
-            "api_key": api_key,
-            "upstream_name": upstream_name,
-            "provider": provider,
-        },
-        workspace=workspace,
-    )
+    return client.get(f"/inference-endpoints/{name}/metrics", params={"range": range}, workspace=workspace)
 
 
 def remove_upstream(name: str, model: str, workspace: Optional[str] = None) -> dict:
     """Stop publishing an upstream."""
     client = get_client()
     return client.delete(
-        f"/inference-endpoints/{name}/upstreams/{model}", workspace=workspace
+        f"/inference-endpoints/{name}/upstreams/{_segment(model)}", workspace=workspace
     )
 
 
@@ -459,3 +565,80 @@ def stream(
 
     if not answered and thinking:
         yield "".join(thinking)
+
+
+def benchmark(
+    name: str,
+    model: str,
+    *,
+    pattern: str = "synthetic",
+    isl: Optional[int] = None,
+    osl: Optional[int] = None,
+    turns: Optional[int] = None,
+    turn_delay_ms: Optional[int] = None,
+    dataset: Optional[str] = None,
+    concurrency: Optional[list] = None,
+    duration_seconds: int = 60,
+    compute: Optional[str] = None,
+    shapes: Optional[list] = None,
+    workspace: Optional[str] = None,
+) -> dict:
+    """
+    Start a performance benchmark (aiperf) against an endpoint.
+
+    ``shapes`` sweeps several input/output lengths in one synthetic run, each
+    over every concurrency: ``[(512, 256), (4096, 256), (256, 2048)]``.
+
+    Runs on the platform's cluster, which the plan limits, unless ``compute``
+    names one of the workspace's own clusters, which it does not. Calls go to
+    the endpoint's public address and count toward the plan's model calls.
+
+    Args:
+        name: the endpoint
+        model: which of its models, by the name callers use
+        pattern: synthetic, multi_turn, agentic or sharegpt
+        isl, osl: input and output tokens (synthetic, multi_turn)
+        turns, turn_delay_ms: conversation shape (multi_turn)
+        dataset: claude-code, claude-code-subagents or exgentic (agentic)
+        concurrency: the points to measure, e.g. [1, 4, 16]
+        duration_seconds: how long each point runs
+        compute: run on this compute target instead of the platform's cluster
+    """
+    body = {
+        "model": model,
+        "pattern": pattern,
+        "runner": "workspace" if compute else "platform",
+        "compute_name": compute,
+        "isl": isl,
+        "osl": osl,
+        "turns": turns,
+        "turn_delay_ms": turn_delay_ms,
+        "dataset": dataset,
+        "concurrency": concurrency,
+        "duration_seconds": duration_seconds,
+        "shapes": [{"isl": int(i), "osl": int(o)} for i, o in shapes] if shapes else None,
+    }
+    body = {k: v for k, v in body.items() if v is not None}
+    return get_client().post(f"/inference-endpoints/{name}/benchmarks", json=body, workspace=workspace)
+
+
+def benchmarks(name: str, workspace: Optional[str] = None) -> dict:
+    """An endpoint's benchmark runs, newest first, and what the plan leaves."""
+    return get_client().get(f"/inference-endpoints/{name}/benchmarks", workspace=workspace) or {}
+
+
+def benchmark_run(name: str, run_id: str, workspace: Optional[str] = None) -> dict:
+    """One benchmark run with its points."""
+    return get_client().get(f"/inference-endpoints/{name}/benchmarks/{run_id}", workspace=workspace)
+
+
+def capacity(name: str, model: str, workspace: Optional[str] = None) -> dict:
+    """
+    What a model behind an endpoint can hold, as its engine reported at start:
+    KV-cache tokens and memory, the context it serves, how many requests of
+    that length fit at once, and the weights' memory. Empty for a provider's
+    model, whose capacity is the provider's.
+    """
+    return get_client().get(
+        f"/inference-endpoints/{name}/benchmark-hints", params={"model": model}, workspace=workspace
+    )

@@ -494,7 +494,7 @@ def start_notebook(
 @app.command("delete")
 def delete_notebook(
     notebook_id: str = typer.Argument(..., metavar="NOTEBOOK", help="Notebook name or ID"),
-    force: bool = typer.Option(False, "--force", "-f", help="Do not ask"),
+    force: bool = typer.Option(False, "--yes", "-y", "--force", "-f", help="Do not ask for confirmation"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
 ):
     """
@@ -511,7 +511,7 @@ def delete_notebook(
 
     if not force:
         # Deletion takes the notebook's files with it, which stopping does not.
-        typer.confirm(f"Delete notebook {notebook_id} and its files?", abort=True)
+        output.confirm(f"Delete notebook {notebook_id} and its files?")
 
     try:
         notebooks.delete(resolved, workspace=workspace)

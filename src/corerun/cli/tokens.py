@@ -42,7 +42,6 @@ def _called(fn):
 COMMON_SCOPES = [
     ("traces:write", "Send spans to /v1/traces. What an OTLP exporter needs."),
     ("traces:read", "Read traces back. Add only if something reads them."),
-    ("evaluations:use", "Start an evaluation. Spends model calls and compute."),
     ("jobs:write", "Create and submit jobs."),
     ("artifacts:read", "Read models and artifacts."),
 ]
@@ -61,6 +60,9 @@ def create_token(
         90, "--expires-in", help="Days until it expires. 0 never expires."
     ),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w"),
+    description: str = typer.Option(
+        "", "--description", "-d", help="What it is for, for whoever reads the list later"
+    ),
     otel: bool = typer.Option(
         False, "--otel", help="Print the OTEL_ exports an exporter needs, with the token in them"
     ),
@@ -92,7 +94,11 @@ def create_token(
 
     token = _called(
         lambda: api.create(
-            name, scopes=wanted or None, expires_in_days=expires_in, workspace=workspace
+            name,
+            scopes=wanted or None,
+            expires_in_days=expires_in,
+            workspace=workspace,
+            description=description,
         )
     )
 
@@ -103,7 +109,10 @@ def create_token(
     console.print(f"  expires    {token.expires_at or 'never'}")
     console.print()
     console.print("[bold]Shown once. Copy it now.[/bold]")
-    console.print(f"  {token.key}")
+    # Unwrapped, whatever the width: Rich breaks a long line at the terminal's
+    # edge -- or at 80 columns when writing to a pipe or a file -- and a token
+    # copied or captured in pieces is a token that does not work.
+    console.print(f"  {token.key}", soft_wrap=True, highlight=False)
 
     if otel:
         config = get_config()
@@ -115,7 +124,11 @@ def create_token(
         console.print("[bold]For an OpenTelemetry exporter:[/bold]")
         console.print(f"  export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT={origin}/v1/traces")
         console.print("  export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf")
-        console.print(f'  export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer {token.key}"')
+        console.print(
+            f'  export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer {token.key}"',
+            soft_wrap=True,
+            highlight=False,
+        )
         console.print("  export OTEL_SERVICE_NAME=<the experiment to collect into>")
         console.print()
         console.print(
@@ -168,7 +181,7 @@ def revoke_token(
     from corerun import tokens as api
 
     if not yes:
-        typer.confirm(f"Revoke {key_id}? Anything using it stops working.", abort=True)
+        output.confirm(f"Revoke {key_id}? Anything using it stops working.")
 
     _called(lambda: api.revoke(key_id, workspace=workspace))
     console.print(f"[green]Revoked[/green] {key_id}")

@@ -22,32 +22,45 @@ get them was to be inside one.
 
 ## Using them
 
+One line installs the CLI, the skills and signs in, served by the platform
+itself (the console's Home page shows it):
+
 ```bash
-uv tool install "git+https://github.com/corerunai/corerun.git#subdirectory=corerun-sdk"
-corerun login               # a workspace to drive it against
-corerun skills install      # into the first agent skills directory that exists
+curl -fsSL https://<console>/api/v1/cli/install.sh | sh        # macOS, Linux
+irm https://<console>/api/v1/cli/install.ps1 | iex             # Windows (PowerShell)
 ```
 
-`pip install "git+https://github.com/corerunai/corerun.git#subdirectory=corerun-sdk"`
-does the same. The skills are package data, so they travel with the CLI on
-either -- there is nothing extra to fetch. Published to PyPI later, at which
-point `uv tool install corerun` is the shorter way to say it.
+Or step by step:
 
-`install` picks `~/.agents/skills` (opencode, DSH, goose) or `~/.claude/skills`
-(Claude Code), whichever already exists, and creates the first if neither does.
-`--dir` chooses somewhere else, `--force` replaces what is already there, and
-`corerun skills list` shows the set without installing it.
+```bash
+uv tool install "git+https://github.com/corerun-ai/corerun-sdk.git"
+corerun skills install                       # every coding agent found on this machine
+corerun login --url https://<console>        # --use-device-code on a server
+```
+
+The skills are package data, so they travel with the CLI -- there is nothing
+extra to fetch. Published to PyPI later, at which point `uv tool install
+corerun` is the shorter way to say it.
+
+`install` puts them where each agent reads skills, for every agent whose home
+exists: Claude Code (`~/.claude/skills`), opencode (`~/.config/opencode/skills`),
+pi (`~/.pi/agent/skills`), Codex (`~/.codex/skills`) -- and always
+`~/.agents/skills`, which opencode, goose and others read. `--agent claude`
+(repeatable) picks agents, `--all` installs for every one of them whether it is
+there or not, `--dir` names a directory instead (`./.claude/skills` for one
+project), `--force` replaces what is already there -- run it after upgrading the
+CLI -- and `corerun skills list` shows the set without installing it.
 
 The notebook image runs the same command at build time, which is why a notebook
 has them already at `~/.agents/skills`.
 
 ## Installing without the CLI
 
-They are published to [corerunai/skills](https://github.com/corerunai/skills),
+They are published to [corerun-ai/skills](https://github.com/corerun-ai/skills),
 which a coding agent installs from directly:
 
 ```
-/plugin marketplace add corerunai/skills
+/plugin marketplace add corerun-ai/skills
 /plugin install corerun@corerun
 ```
 

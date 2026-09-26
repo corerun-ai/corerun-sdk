@@ -205,12 +205,8 @@ def exchange(
         raise BrowserAuthError(f"could not reach {api_url}: {exc}") from exc
 
     if response.status_code != 200:
-        detail = ""
-        try:
-            body = response.json()
-            detail = body.get("error_description") or body.get("error") or ""
-        except Exception:
-            detail = response.text[:200]
-        raise BrowserAuthError(f"could not exchange the authorization code: {detail}")
+        from corerun.http import error_detail
+
+        raise BrowserAuthError(f"could not exchange the authorization code: {error_detail(response)}")
 
     return response.json()

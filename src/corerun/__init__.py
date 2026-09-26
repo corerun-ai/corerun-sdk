@@ -116,7 +116,8 @@ from corerun import (
     compute,
     datasets,
     endpoints,
-    evaluations,
+    org,
+    prices,
     genai,
     tokens,
     finetune,
@@ -125,6 +126,7 @@ from corerun import (
     notebooks,
     quota,
     registry,
+    repos,
 )
 from corerun.client import CoreRunClient
 from corerun.config import get_client, get_config, init
@@ -138,11 +140,13 @@ __all__ = [
     "datasets",
     "jobs",
     "registry",
+    "repos",
     "notebooks",
     "endpoints",
+    "org",
+    "prices",
     "inference",
     "finetune",
-    "evaluations",
     "genai",
     "tokens",
     "clusters",

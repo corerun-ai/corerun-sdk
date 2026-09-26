@@ -45,8 +45,9 @@ def _install_command_is_usable(command: str) -> bool:
 @app.command("add")
 def add_host(
     name: str = typer.Argument(..., metavar="NAME", help="Host name, e.g. dgx1"),
-    architecture: str = typer.Option(
-        "amd64", "--architecture", "--arch", help="amd64 or arm64"
+    architecture: Optional[str] = typer.Option(
+        None, "--architecture", "--arch",
+        help="amd64 or arm64; usually unneeded -- detected when the host connects",
     ),
     os: str = typer.Option("linux", "--os", help="linux or darwin"),
     accelerator_family: Optional[str] = typer.Option(
@@ -101,7 +102,7 @@ def add_host(
     def render():
         console.print(
             f"[green]Prepared[/green] {name} "
-            f"[dim](host, {enrollment.os}/{enrollment.architecture})[/dim]"
+            f"[dim](host, {enrollment.os}; architecture detected when it connects)[/dim]"
         )
         console.print("\n[bold]1. On the machine, install the operator:[/bold]")
         if _install_command_is_usable(enrollment.install_command):
@@ -157,7 +158,7 @@ def remove_host(
     _init_client()
 
     if not yes and not output.json_mode():
-        typer.confirm(f"Remove the host '{name}' from the platform?", abort=True)
+        output.confirm(f"Remove the host '{name}' from the platform?")
 
     import corerun.clusters as clusters
 

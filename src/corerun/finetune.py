@@ -66,6 +66,9 @@ class FineTuneJob(BaseModel):
     max_seq_length: int = 2048
     experiment: Optional[str] = None
     error: Optional[str] = None
+    result_name: Optional[str] = None
+    eval_fraction: Optional[float] = None
+    priority: Optional[str] = None
     job_id: Optional[str] = None    # Underlying compute job ID
     owner_id: str
     created_at: Optional[datetime] = None
@@ -97,6 +100,10 @@ def create(
     experiment: Optional[str] = None,
     environment: Optional[Dict[str, str]] = None,
     workspace: Optional[str] = None,
+    result_name: Optional[str] = None,
+    eval_fraction: float = 0.0,
+    priority: Optional[str] = None,
+    max_runtime_minutes: Optional[int] = None,
 ) -> FineTuneJob:
     """
     Create and start a fine-tuning job.
@@ -119,6 +126,12 @@ def create(
         experiment: Experiment name for output grouping
         environment: Extra environment variables
         workspace: Workspace ID (uses default if not specified)
+        result_name: Register the result in the model registry under this
+            name, as its next version, when the job succeeds
+        eval_fraction: Share of the dataset held out for evaluation (0.1 is a
+            90/10 split); 0 for none
+        priority: "low", "normal" or "high"
+        max_runtime_minutes: Stop the job after this long
 
     Returns:
         FineTuneJob object
@@ -158,9 +171,29 @@ def create(
         body["experiment"] = experiment
     if environment:
         body["environment"] = environment
+    if result_name:
+        body["result_name"] = result_name
+    if eval_fraction:
+        body["eval_fraction"] = eval_fraction
+    if priority:
+        body["priority"] = priority
+    if max_runtime_minutes:
+        body["max_runtime_minutes"] = max_runtime_minutes
 
     response = client.post("/finetune", json=body, workspace=workspace)
     return FineTuneJob(**response)
+
+
+def dataset_id(reference: str, workspace: Optional[str] = None) -> str:
+    """A dataset's id, from its name or its id."""
+    import re
+
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", reference):
+        return reference
+    found = get_client().get(f"/data/{reference}", workspace=workspace)
+    if not found.get("id"):
+        raise ValueError(f"no dataset named {reference!r}")
+    return found["id"]
 
 
 def list(

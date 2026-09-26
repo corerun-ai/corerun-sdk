@@ -34,17 +34,54 @@ The slug is derived from the name when omitted. `--use` makes it the workspace
 this CLI acts in, which saves a `set` afterwards.
 
 `--capabilities` is a subset of `notebooks, training, models,
-datasets, images, endpoints`; omitting it means all of them. It decides what
+datasets, images, endpoints, experiments, traces`; omitting it means all of them. It decides what
 the console shows and what the workspace is for — a serving-only workspace
 asking for `endpoints` is clearer than one that offers training nobody will
 use. It is not an authorization boundary: do not reach for it to stop somebody
 doing something.
 
 Storage comes from the organization's shared account when there is one. The
-workspace gets a bucket of its own — `corerun-<slug>` — and on ObjectIO a
+workspace gets a bucket of its own — `cr-<slug>-<hex>` — and on ObjectIO a
 credential confined to that bucket. Nothing to pass; it happens on creation.
-**A workspace created before the organization had a shared account does not get
-one retroactively.** Add storage first.
+A workspace created before the organization had a shared account gets its
+bucket the moment one is added: registering, replacing or removing the
+account re-provisions every workspace under it.
+
+## Changing a workspace
+
+```bash
+corerun ws edit speech --name "Speech Research"
+corerun ws edit speech --kind deploy
+corerun ws edit speech --capabilities notebooks,training,models
+```
+
+`--kind` is `genai`, `ml` or `deploy`: which rail and home page the console
+opens on. It never adds or removes anything the workspace can do.
+
+`--capabilities` is the whole set, not an addition — anything left out is
+withdrawn at once and its routes answer 404 (the data stays; granting it back
+brings it into view). **Withdrawing one people are using takes their work out
+of sight mid-task**; confirm with the human first.
+
+## The organisation's security settings
+
+```bash
+corerun org security show
+corerun org security set --access-ttl 30m --lockout-attempts 5
+corerun org security set --allow-network 10.0.0.0/8 --deny-country KP
+corerun org security set --clear
+```
+
+An organisation administrator can make signing in stricter than the
+installation's defaults: shorter token and session lifetimes, API keys that
+must expire sooner, a tighter lockout, longer passwords, and the networks and
+countries its people may come from. Anything looser than the installation
+allows is refused, naming the field. `set` changes only the settings named.
+
+**A network or country rule applies to you too.** An allow list that does not
+include where you are signing in from locks you and every other administrator
+out at the next refresh. Check `show` first, confirm the list with the human,
+and never set an allow list on someone's behalf without it.
 
 ## Deleting a workspace
 
@@ -101,6 +138,8 @@ corerun clusters add <name>            # prints the manifest to apply
 corerun clusters rm <name>
 corerun hosts add <name>               # bare metal; prints an installer
 corerun hosts rm <name>
+corerun clusters scope <name> --organization          # share with every workspace
+corerun clusters scope <name> --workspace-only <ws>   # give to one workspace
 ```
 
 `clusters list` returns both the organization's shared clusters and this
@@ -108,6 +147,12 @@ workspace's own, each tagged with its scope. A cluster added at organization
 scope is shared into every workspace; one added at workspace scope is not.
 Check the scope before removing anything — removing a shared cluster takes it
 away from workspaces you are not looking at.
+
+Scope can be changed later with `clusters scope`, by an organization
+administrator, without reinstalling anything on the machine. Giving a shared
+cluster to one workspace is refused while other workspaces have work running on
+it; say which, rather than stopping their work to make it pass. A host's
+architecture is detected when it connects — `hosts add` does not need `--arch`.
 
 `clusters add` and `hosts add` do not reach out to the machine. They hand back
 a manifest or an installer for somebody to run there, and the operator joins

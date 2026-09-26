@@ -184,87 +184,109 @@ def get_job(
         console.print(f"  Ended: {job.ended_at}")
 
 
-@app.command("submit")
+@app.command("submit", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def submit_job(
-    name: str = typer.Option(..., "--name", "-n", help="Job name"),
-    image: str = typer.Option(..., "--image", "-i", help="Docker image"),
-    compute: str = typer.Option(..., "--compute", "-c", help="Compute target name"),
-    command: Optional[str] = typer.Option(None, "--command", help="Command (space-separated)"),
-    gpu: float = typer.Option(0, "--gpu", "-g", help="Number of GPUs"),
+    ctx: typer.Context,
+    job_file: Optional[str] = typer.Option(None, "--file", "-f", help="Job file (corerun.yaml); flags given beside it override it"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Job name"),
+    image: Optional[str] = typer.Option(None, "--image", "-i", help="Container image"),
+    compute: Optional[str] = typer.Option(None, "--compute", "-c", help="Compute target name"),
+    command: Optional[str] = typer.Option(None, "--command", help="Command, run by sh -c (or give it after --)"),
+    gpu: Optional[float] = typer.Option(None, "--gpu", "-g", help="Number of GPUs (hosts; a profile sets it on Kubernetes)"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Resource profile name from cluster"),
     experiment: Optional[str] = typer.Option(None, "--experiment", "-x", help="Experiment name for output grouping"),
-    datasets: Optional[str] = typer.Option(None, "--datasets", "-d", help="Datasets (comma-separated)"),
+    datasets: Optional[str] = typer.Option(None, "--datasets", "-d", help="Datasets (comma-separated), mounted under /data/"),
     env: Optional[List[str]] = typer.Option(None, "--env", "-e", help="Environment vars (KEY=VALUE)"),
-    source_dir: Optional[str] = typer.Option(None, "--source", "-s", help="Local source directory to upload"),
-    working_dir: Optional[str] = typer.Option(None, "--workdir", help="Working directory in container (default: /code if --source)"),
+    source_dir: Optional[str] = typer.Option(None, "--source", "-s", help="Local folder of code, cloned into /code"),
+    repo: Optional[str] = typer.Option(None, "--repo", help="Workspace repository to clone (with --source: the one pushed to, default 'jobs')"),
+    git_url: Optional[str] = typer.Option(None, "--git-url", help="Repository on another host: owner/name with --connection, or an https URL"),
+    connection: Optional[str] = typer.Option(None, "--connection", help="Git connection (name or ID) that reads --git-url"),
+    ref: Optional[str] = typer.Option(None, "--ref", help="Branch, tag or commit (with --source: the branch pushed to, default job/<name>)"),
+    code_subpath: Optional[str] = typer.Option(None, "--path", help="Directory within the repository to use as /code"),
+    working_dir: Optional[str] = typer.Option(None, "--workdir", help="Working directory in container (default: /code when there is code)"),
+    no_requirements: bool = typer.Option(False, "--no-requirements", help="Do not install requirements.txt before the command"),
+    priority: Optional[str] = typer.Option(None, "--priority", help="low, normal or high"),
+    max_runtime: Optional[int] = typer.Option(None, "--max-runtime", help="Stop the job after this many minutes"),
     wait_for_completion: bool = typer.Option(False, "--wait", help="Wait for job to complete"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
 ):
     """
-    Submit a new job.
+    Submit a training job: your code, an image, a command.
 
-    Job outputs are automatically mounted at /outputs, /checkpoints, /logs, /artifacts.
+    Your code is a folder -- it does not need to be a git repository. It is
+    snapshotted on each submit and appears in the job as /code, the working
+    directory. Its .gitignore is honoured; a requirements.txt in it is
+    installed before the command (--no-requirements to skip). Read data from
+    /data/<dataset>, write results to /outputs and checkpoints to /checkpoints:
+    both are kept in the workspace's storage.
 
-    If --source is provided, the local directory is uploaded and mounted at /code.
+    Examples:
 
-    Example:
-        corerun jobs submit --name train --image pytorch/pytorch:latest --compute dgx --gpu 1 --profile profile-1
-        corerun jobs submit --name train --image python:3.11 --compute cpu-cluster \\
-            --command "python train.py" --datasets mnist,cifar --experiment my-experiment
+        # This folder, one GPU profile; the command goes after --
+        corerun jobs submit --name train --image pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime \\
+            --compute gke-uae-n1 --profile gpu-h100-1 --source . -- python train.py --epochs 10
 
-        # With local training code
-        corerun jobs submit --name train --image pytorch/pytorch:latest --compute dgx \\
-            --source ./src --command "python train.py" --gpu 1
+        # Everything in a file kept with the code (SkyPilot's task format)
+        corerun jobs submit -f corerun.yaml
+
+        # Code already in a repository: the workspace's, or GitHub's
+        corerun jobs submit ... --repo train --ref main --path src -- python train.py
+        corerun jobs submit ... --git-url acme/trainer --connection github --ref v2 -- python train.py
     """
     _init_client()
 
     import corerun.jobs as jobs
+    from corerun import jobfile
     from pathlib import Path
 
-    # Parse command
-    cmd_list = None
-    if command:
-        cmd_list = command.split()
+    spec = {}
+    if job_file:
+        try:
+            spec = jobfile.load(job_file)
+        except jobfile.JobFileError as e:
+            raise output.fail(str(e))
 
-    # Parse datasets
-    ds_list = None
+    # The command: after --, or --command, or the file's run. Given after --
+    # it is an argv, kept exactly; --command and run go to a shell.
+    trailing = list(ctx.args)
+    if trailing and trailing[0] == "--":
+        trailing = trailing[1:]
+    if trailing and command:
+        raise output.fail("give the command after -- or with --command, not both")
+    if trailing:
+        spec["command"] = trailing
+    elif command:
+        spec["command"] = ["sh", "-c", command]
+
+    flags = {
+        "name": name, "image": image, "compute_name": compute, "gpu": gpu, "profile": profile,
+        "experiment": experiment, "working_dir": working_dir, "repo": repo, "git_url": git_url,
+        "connection": connection, "ref": ref, "path": code_subpath, "priority": priority,
+        "max_runtime_minutes": max_runtime,
+    }
+    spec.update({k: v for k, v in flags.items() if v is not None})
     if datasets:
-        ds_list = [d.strip() for d in datasets.split(",")]
-
-    # Parse environment
-    env_dict = None
+        spec["datasets"] = [d.strip() for d in datasets.split(",") if d.strip()]
     if env:
-        env_dict = {}
-        for e in env:
-            if "=" in e:
-                k, v = e.split("=", 1)
-                env_dict[k] = v
-
-    # Validate source directory
-    source_directory = None
+        spec["environment"] = {**spec.get("environment", {}), **dict(e.split("=", 1) for e in env if "=" in e)}
+    if no_requirements:
+        spec["install_requirements"] = False
     if source_dir:
-        source_path = Path(source_dir)
-        if not source_path.is_dir():
-            console.print(f"[red]Error:[/red] Source directory does not exist: {source_dir}")
-            raise typer.Exit(1)
-        source_directory = source_path
-        console.print(f"Uploading source code from: {source_path.resolve()}")
+        spec["source_directory"] = Path(source_dir)
+
+    missing = [flag for flag, key in (("--name", "name"), ("--image", "image"), ("--compute", "compute_name")) if not spec.get(key)]
+    if missing:
+        raise output.fail(f"missing {', '.join(missing)} (as flags, or in the job file)")
+    if spec.get("priority") and spec["priority"] not in ("low", "normal", "high"):
+        raise output.fail("priority is low, normal or high")
+    folder = spec.get("source_directory")
+    if folder is not None:
+        if not Path(folder).is_dir():
+            raise output.fail(f"no such folder: {folder}")
+        console.print(f"Pushing code from {Path(folder).resolve()} to repository '{spec.get('repo') or 'jobs'}'")
 
     try:
-        job = jobs.submit(
-            name=name,
-            image=image,
-            compute_name=compute,
-            command=cmd_list,
-            gpu=gpu,
-            profile=profile,
-            experiment=experiment,
-            datasets=ds_list,
-            environment=env_dict,
-            source_directory=source_directory,
-            working_dir=working_dir,
-            workspace=workspace,
-        )
+        job = jobs.submit(workspace=workspace, **spec)
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -272,8 +294,10 @@ def submit_job(
     console.print(f"[green]✓[/green] Submitted job '{job.name}'")
     console.print(f"  ID: {job.id}")
     console.print(f"  Experiment: {job.experiment or 'default'}")
-    if source_directory:
-        console.print(f"  Code: /code")
+    code = (job.config or {}).get("code") if isinstance(job.config, dict) else None
+    if code:
+        where = code.get("repo") or code.get("url") or ""
+        console.print(f"  Code: {where}@{str(code.get('ref') or 'default')[:12]} -> /code")
     console.print(f"  Status: [{_status_style(job.status)}]{job.status}[/]")
 
     if wait_for_completion:
@@ -379,7 +403,7 @@ def cancel_job(
 def delete_job(
     job_id: str = typer.Argument(..., metavar="JOB", help="Job name or ID"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
-    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+    force: bool = typer.Option(False, "--yes", "-y", "--force", "-f", help="Do not ask for confirmation"),
 ):
     """
     Delete a job.
@@ -395,10 +419,7 @@ def delete_job(
     resolved = _resolve(job_id, workspace)
 
     if not force:
-        confirm = typer.confirm(f"Delete job '{job_id}'?")
-        if not confirm:
-            console.print("Cancelled")
-            raise typer.Exit(0)
+        output.confirm(f"Delete job '{job_id}'?")
 
     try:
         jobs.delete(resolved, workspace=workspace)

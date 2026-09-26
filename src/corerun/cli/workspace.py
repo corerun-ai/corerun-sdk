@@ -8,7 +8,6 @@ command inherits, so it gets its own place rather than living inside auth.
 from typing import Optional
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from corerun.cli import output
@@ -35,22 +34,12 @@ def fetch(api_url: str, api_key: str, verify: bool = True):
     servname provided, or not known" names neither the host nor the setting
     that chose it, and this is the command people run first.
     """
-    import httpx
+    from corerun.cli import http
 
-    from corerun.exceptions import unreachable
-
-    url = api_url.rstrip("/") + "/workspaces"
-    try:
-        response = httpx.get(
-            url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=30.0,
-            verify=verify,
-        )
-    except httpx.ConnectError as e:
-        raise unreachable(url, e) from e
-    response.raise_for_status()
-    return response.json().get("workspaces", [])
+    body = http.call(
+        "GET", api_url.rstrip("/") + "/workspaces", token=api_key, verify=verify, timeout=30.0
+    )
+    return body.get("workspaces", [])
 
 
 def label(workspace: dict) -> str:
@@ -115,6 +104,16 @@ def choose(api_url: str, api_key: str, default: str = None, verify: bool = True)
         if default and workspace["id"] == default:
             selected = n
             break
+
+    # With no terminal to ask on -- a script, an agent, a CI step -- take the
+    # default and say which, rather than abort: aborting here threw away a
+    # sign-in that had already succeeded, and nothing had been saved.
+    import sys
+
+    if not sys.stdin.isatty():
+        chosen = workspaces[selected - 1]
+        console.print(f"  Using [bold]{label(chosen)}[/bold] (no terminal to ask on; change it with: corerun ws set)")
+        return chosen["id"]
 
     from rich.prompt import IntPrompt
 
@@ -291,7 +290,6 @@ def create_workspace(
         corerun ws create "Speech" --slug speech --capabilities notebooks,training
         corerun ws create "Scratch" --use
     """
-    import httpx
 
     config = _require_credentials()
 
@@ -310,25 +308,9 @@ def create_workspace(
             raise typer.Exit(1)
         payload["capabilities"] = wanted
 
-    url = config.api_url.rstrip("/") + "/workspaces"
-    try:
-        response = httpx.post(
-            url,
-            headers={"Authorization": f"Bearer {config.auth_token}"},
-            json=payload,
-            timeout=60.0,
-            verify=config.verify_ssl,
-        )
-    except httpx.ConnectError as e:
-        from corerun.exceptions import unreachable
+    from corerun.cli import http
 
-        raise unreachable(url, e) from e
-
-    if response.status_code not in (200, 201):
-        console.print(f"[red]Error:[/red] {_message(response)}")
-        raise typer.Exit(1)
-
-    created = response.json()
+    created = http.request("POST", "/workspaces", json=payload)
     if use:
         config.workspace = created.get("id")
         config.save()
@@ -354,7 +336,6 @@ def delete_workspace(
         corerun ws delete scratch
         corerun ws delete scratch --yes
     """
-    import httpx
 
     config = _require_credentials()
 
@@ -373,27 +354,13 @@ def delete_workspace(
     if not yes:
         # Named back before it is destroyed: a slug typed from memory is how
         # the wrong workspace gets deleted.
-        typer.confirm(
-            f"Delete {label(target)} and everything in it? This cannot be undone.",
-            abort=True,
+        output.confirm(
+            f"Delete {label(target)} and everything in it? This cannot be undone."
         )
 
-    url = config.api_url.rstrip("/") + f"/workspaces/{target['id']}"
-    try:
-        response = httpx.delete(
-            url,
-            headers={"Authorization": f"Bearer {config.auth_token}"},
-            timeout=60.0,
-            verify=config.verify_ssl,
-        )
-    except httpx.ConnectError as e:
-        from corerun.exceptions import unreachable
+    from corerun.cli import http
 
-        raise unreachable(url, e) from e
-
-    if response.status_code not in (200, 204):
-        console.print(f"[red]Error:[/red] {_message(response)}")
-        raise typer.Exit(1)
+    http.request("DELETE", f"/workspaces/{target['id']}")
 
     # The CLI must not keep pointing at something that no longer exists.
     if config.workspace == target["id"]:
@@ -413,21 +380,12 @@ def _slugify(name: str) -> str:
     return re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", name.lower()))
 
 
-def _message(response) -> str:
-    """The server's own words when it has any, the status line otherwise."""
-    try:
-        body = response.json()
-        return body.get("message") or body.get("error") or response.text
-    except Exception:
-        return f"{response.status_code} {response.text}"
-
-
 @app.command("edit")
 def edit_workspace(
     slug: str = typer.Argument(..., help="The workspace to change"),
     name: Optional[str] = typer.Option(None, "--name", help="New display name"),
     kind: Optional[str] = typer.Option(
-        None, "--kind", help="ml or genai — which console rail this workspace draws"
+        None, "--kind", help="genai, ml or deploy — which console rail and home page this workspace shows; it never changes what the workspace can do"
     ),
     capabilities: Optional[str] = typer.Option(
         None,
@@ -451,7 +409,6 @@ def edit_workspace(
         corerun ws edit research --name "ML Research"
         corerun ws edit genai-dev --capabilities experiments,traces,datasets,endpoints,training
     """
-    import httpx
 
     if name is None and kind is None and capabilities is None:
         console.print("[yellow]Nothing to change.[/yellow] Pass --name, --kind or --capabilities.")
@@ -475,8 +432,8 @@ def edit_workspace(
     if name is not None:
         payload["display_name"] = name
     if kind is not None:
-        if kind not in ("ml", "genai"):
-            console.print("[red]Error:[/red] --kind must be ml or genai")
+        if kind not in ("ml", "genai", "deploy"):
+            console.print("[red]Error:[/red] --kind must be genai, ml or deploy")
             raise typer.Exit(1)
         payload["kind"] = kind
     if capabilities is not None:
@@ -488,23 +445,11 @@ def edit_workspace(
             raise typer.Exit(1)
         payload["capabilities"] = wanted
 
-    url = config.api_url.rstrip("/") + f"/workspaces/{workspace['id']}"
-    try:
-        response = httpx.put(
-            url,
-            json=payload,
-            headers={"Authorization": f"Bearer {config.auth_token}"},
-            timeout=config.timeout,
-        )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        console.print(f"[red]Error:[/red] {e.response.text}")
-        raise typer.Exit(1)
-    except Exception as e:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+    from corerun.cli import http
 
-    updated = response.json()
+    updated = http.request(
+        "PUT", f"/workspaces/{workspace['id']}", json=payload, timeout=config.timeout
+    )
     console.print(f"[green]Updated[/green] {updated.get('display_name') or slug}")
     console.print(f"  kind          {updated.get('kind')}")
     console.print(f"  capabilities  {', '.join(updated.get('capabilities') or [])}")

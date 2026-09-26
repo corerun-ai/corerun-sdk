@@ -336,7 +336,7 @@ def add_feedback(
 def delete_trace(
     trace_id: str = typer.Argument(..., help="Trace ID"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
-    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+    force: bool = typer.Option(False, "--yes", "-y", "--force", "-f", help="Do not ask for confirmation"),
 ):
     """
     Delete a trace.
@@ -348,10 +348,7 @@ def delete_trace(
     _init_client()
 
     if not force:
-        confirm = typer.confirm(f"Delete trace '{trace_id}'?")
-        if not confirm:
-            console.print("Cancelled")
-            raise typer.Exit(0)
+        output.confirm(f"Delete trace '{trace_id}'?")
 
     from corerun import get_client
     client = get_client()

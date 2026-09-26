@@ -152,9 +152,9 @@ def get_job(
 @app.command("create")
 def create_job(
     name: str = typer.Option(..., "--name", "-n", help="Job name"),
-    framework: str = typer.Option(..., "--framework", "-f", help="Framework: unsloth or hf_trainer"),
-    base_model: str = typer.Option(..., "--model", "-m", help="HuggingFace model ID"),
-    dataset_id: str = typer.Option(..., "--dataset", "-d", help="Dataset ID"),
+    framework: str = typer.Option("hf_trainer", "--framework", "-f", help="Trainer framework"),
+    base_model: str = typer.Option(..., "--model", "-m", help="Hugging Face id, or registry://name"),
+    dataset_id: str = typer.Option(..., "--dataset", "-d", help="Dataset name or ID"),
     compute: str = typer.Option(..., "--compute", "-c", help="Compute target name"),
     method: str = typer.Option("lora", "--method", help="Method: lora, qlora, or full"),
     gpu: float = typer.Option(1.0, "--gpu", "-g", help="Number of GPUs"),
@@ -166,6 +166,10 @@ def create_job(
     lora_alpha: int = typer.Option(16, "--lora-alpha", help="LoRA alpha"),
     max_seq_length: int = typer.Option(2048, "--max-seq-len", help="Max sequence length"),
     experiment: Optional[str] = typer.Option(None, "--experiment", "-x", help="Experiment name"),
+    result_name: Optional[str] = typer.Option(None, "--as", help="Register the result in the model registry under this name when it succeeds"),
+    eval_split: float = typer.Option(0.0, "--eval-split", help="Share held out for evaluation, e.g. 0.1 for 90/10"),
+    priority: Optional[str] = typer.Option(None, "--priority", help="low, normal or high"),
+    max_runtime: Optional[int] = typer.Option(None, "--max-runtime", help="Stop the job after this many minutes"),
     wait_for_completion: bool = typer.Option(False, "--wait", help="Wait for job to complete"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
 ):
@@ -173,9 +177,10 @@ def create_job(
     Create a fine-tuning job.
 
     Example:
-        corerun finetune create --name llama3-tuned --framework unsloth \\
-            --model unsloth/Llama-3.2-3B-Instruct --dataset abc123 \\
-            --compute dgx-cluster --gpu 1 --epochs 3
+        corerun finetune create --name llama3-arabic \\
+            --model meta-llama/Llama-3.1-8B-Instruct --dataset arabic-support-chat \\
+            --compute gke-uae-n1 --profile gpu-h100-1 --method lora --eval-split 0.1 \\
+            --as llama3-8b-arabic-chat
     """
     _init_client()
 
@@ -186,7 +191,7 @@ def create_job(
             name=name,
             framework=framework,
             base_model=base_model,
-            dataset_id=dataset_id,
+            dataset_id=ft.dataset_id(dataset_id, workspace=workspace),
             compute_name=compute,
             method=method,
             gpu=gpu,
@@ -199,6 +204,10 @@ def create_job(
             max_seq_length=max_seq_length,
             experiment=experiment,
             workspace=workspace,
+            result_name=result_name,
+            eval_fraction=eval_split,
+            priority=priority,
+            max_runtime_minutes=max_runtime,
         )
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -208,6 +217,8 @@ def create_job(
     console.print(f"  ID: {job.id}")
     console.print(f"  Framework: {job.framework}  Method: {job.method}")
     console.print(f"  Model: {job.base_model}")
+    if job.result_name:
+        console.print(f"  Result: registered as {job.result_name} when it succeeds")
     console.print(f"  Status: [{_status_style(job.status)}]{job.status}[/]")
 
     if wait_for_completion:
@@ -228,7 +239,7 @@ def create_job(
 def delete_job(
     job_id: str = typer.Argument(..., help="Fine-tuning job ID"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
-    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+    force: bool = typer.Option(False, "--yes", "-y", "--force", "-f", help="Do not ask for confirmation"),
 ):
     """
     Delete a fine-tuning job.
@@ -242,10 +253,7 @@ def delete_job(
     import corerun.finetune as ft
 
     if not force:
-        confirm = typer.confirm(f"Delete fine-tuning job '{job_id}'?")
-        if not confirm:
-            console.print("Cancelled")
-            raise typer.Exit(0)
+        output.confirm(f"Delete fine-tuning job '{job_id}'?")
 
     try:
         ft.delete(job_id, workspace=workspace)

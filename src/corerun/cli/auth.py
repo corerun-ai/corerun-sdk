@@ -28,7 +28,27 @@ def resolve_login_url(explicit: Optional[str]) -> str:
     silently opened a browser at somebody else's platform -- with
     CORERUN_API_URL set, and ignored.
     """
-    return explicit or os.getenv("CORERUN_API_URL") or _configured_api_url() or DEFAULT_API_URL
+    return api_base(explicit or os.getenv("CORERUN_API_URL") or _configured_api_url() or DEFAULT_API_URL)
+
+
+def api_base(url: str) -> str:
+    """The API base for a platform address, whichever form it was given in.
+
+    Every request the SDK makes is the base plus a path -- /auth/device,
+    /notebooks -- so the base has to end in /api/v1. People type the address
+    they open in a browser, http://localhost:8080, and the first request then
+    went to the console, which answered 405 to a POST it had never heard of.
+    An address with no path gets /api/v1 appended; one that already names a
+    path is taken as given, so a deployment that serves the API elsewhere is
+    not second-guessed.
+    """
+    url = url.strip().rstrip("/")
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    if "/" not in rest:
+        return f"{url}/api/v1"
+    return url
 
 
 def _configured_api_url() -> Optional[str]:
@@ -137,8 +157,11 @@ def login(
             workspace=config.workspace,
             api_url=config.api_url,
         )
-        # Try to list datasets as a test
-        client.get("/data")
+        # Ask something every signed-in person may ask, whatever their
+        # workspace offers. This used to list datasets, which a GenAI
+        # workspace does not have -- so a good sign-in there was reported as
+        # a failure and never saved.
+        client.get("/me/workspaces")
         console.print("[green]✓[/green] Successfully authenticated!")
     except Exception as e:
         console.print(f"[red]✗[/red] Authentication failed: {e}")
@@ -212,7 +235,7 @@ def whoami():
     try:
         from corerun import init
         client = init()
-        client.get("/data")
+        client.get("/me/workspaces")
         console.print("  Status: [green]Connected[/green]")
     except Exception as e:
         console.print(f"  Status: [red]Error - {e}[/red]")

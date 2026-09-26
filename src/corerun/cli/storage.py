@@ -22,6 +22,7 @@ app = typer.Typer(help="Storage accounts, org-wide or per workspace")
 
 PROVIDERS = ("objectio", "minio", "ceph", "aws", "other")
 PLANES = ("git", "s3")
+TYPES = ("s3", "azure")
 
 
 def _require_credentials():
@@ -49,26 +50,18 @@ def _base(config, workspace_scoped: bool) -> str:
 
 
 def _call(method: str, url: str, headers: dict, verify: bool, json_body=None):
-    import httpx
+    """One request, decoded; a failure is a sentence the entry point prints."""
+    from corerun.cli import http
 
-    from corerun.exceptions import unreachable
-
-    try:
-        response = httpx.request(
-            method, url, headers=headers, json=json_body, timeout=60.0, verify=verify
-        )
-    except httpx.ConnectError as e:
-        raise unreachable(url, e) from e
-
-    if response.status_code >= 400:
-        try:
-            body = response.json()
-            message = body.get("message") or body.get("error") or response.text
-        except Exception:
-            message = f"{response.status_code} {response.text}"
-        console.print(f"[red]Error:[/red] {message}")
-        raise typer.Exit(1)
-    return response
+    return http.call(
+        method,
+        url,
+        token=headers.get("Authorization", "").removeprefix("Bearer "),
+        verify=verify,
+        json=json_body,
+        headers={k: v for k, v in headers.items() if k != "Authorization"},
+        config=get_config(),
+    )
 
 
 def _render(targets, scope: str) -> None:
@@ -114,8 +107,7 @@ def list_storage(
         corerun storage list --workspace
     """
     config = _require_credentials()
-    response = _call("GET", _base(config, workspace), _headers(config, workspace), config.verify_ssl)
-    body = response.json()
+    body = _call("GET", _base(config, workspace), _headers(config, workspace), config.verify_ssl)
     targets = body.get("storage") or body.get("storage_targets") or []
     scope = "workspace" if workspace else "organization"
     output.emit(targets, lambda: _render(targets, scope))
@@ -124,41 +116,86 @@ def list_storage(
 @app.command("add")
 def add_storage(
     name: str = typer.Argument(..., help="What to call this account"),
-    endpoint: str = typer.Option(..., "--endpoint", help="S3 endpoint, e.g. https://s3.example.com"),
-    access_key: str = typer.Option(..., "--access-key", help="Account access key"),
-    secret_key: str = typer.Option(..., "--secret-key", help="Account secret key", prompt=True, hide_input=True),
-    provider: str = typer.Option("objectio", "--provider", help=f"One of: {', '.join(PROVIDERS)}"),
+    kind: str = typer.Option("s3", "--type", help=f"One of: {', '.join(TYPES)}"),
+    endpoint: str = typer.Option(
+        None,
+        "--endpoint",
+        help="S3 endpoint, e.g. https://s3.example.com (Azure: only for a sovereign cloud or emulator)",
+    ),
+    access_key: str = typer.Option(None, "--access-key", help="S3 account access key"),
+    secret_key: str = typer.Option(
+        None, "--secret-key", help="S3 account secret key (prompted when omitted)"
+    ),
+    account: str = typer.Option(None, "--account", help="Azure storage account name"),
+    account_key: str = typer.Option(
+        None, "--account-key", help="Azure storage account key (prompted when omitted)"
+    ),
+    container: str = typer.Option(
+        None, "--container", help="Optional shared container; workspaces get their own regardless"
+    ),
+    provider: str = typer.Option(
+        "objectio", "--provider", help=f"S3 only. One of: {', '.join(PROVIDERS)}"
+    ),
     plane: str = typer.Option("git", "--plane", help=f"Where models live: {', '.join(PLANES)}"),
     region: str = typer.Option("us-east-1", "--region", help="S3 region"),
-    bucket: str = typer.Option(None, "--bucket", help="Optional shared bucket; workspaces get their own regardless"),
-    workspace: bool = typer.Option(False, "--workspace", "-w", help="Scope to this workspace instead of the organization"),
+    bucket: str = typer.Option(
+        None, "--bucket", help="Optional shared bucket; workspaces get their own regardless"
+    ),
+    workspace: bool = typer.Option(
+        False, "--workspace", "-w", help="Scope to this workspace instead of the organization"
+    ),
 ):
     """
     Add a storage account.
 
     Organization-wide by default: every workspace created afterwards gets a
-    bucket of its own from it, and on ObjectIO a credential confined to that
-    bucket.
+    bucket or container of its own from it, with a credential confined to it
+    -- a scoped key on ObjectIO, a container SAS on Azure Blob Storage.
 
     Example:
         corerun storage add orgs3 --endpoint https://s3.example.com \\
             --access-key AKIA... --secret-key ...
+        corerun storage add orgblob --type azure --account mycompanyml --account-key ...
         corerun storage add scratch --endpoint ... --access-key ... --workspace
     """
     config = _require_credentials()
 
-    if provider not in PROVIDERS:
-        console.print(f"[red]Error:[/red] unknown provider {provider!r}. One of: {', '.join(PROVIDERS)}")
+    if kind not in TYPES:
+        console.print(f"[red]Error:[/red] unknown type {kind!r}. One of: {', '.join(TYPES)}")
         raise typer.Exit(1)
     if plane not in PLANES:
         console.print(f"[red]Error:[/red] unknown plane {plane!r}. One of: {', '.join(PLANES)}")
         raise typer.Exit(1)
 
-    payload = {
-        "name": name,
-        "storage_type": "s3",
-        "description": "Organization storage account" if not workspace else "Workspace storage account",
-        "config": {
+    description = "Organization storage account" if not workspace else "Workspace storage account"
+    if kind == "azure":
+        if not account:
+            console.print("[red]Error:[/red] --account is required for an Azure storage account")
+            raise typer.Exit(1)
+        if not account_key:
+            account_key = typer.prompt("Account key", hide_input=True)
+        storage_config = {
+            "provider": "azure",
+            "account": account,
+            "account_key": account_key,
+            "storage_plane": plane,
+            **({"endpoint": endpoint} if endpoint else {}),
+            **({"container": container} if container else {}),
+        }
+    else:
+        if provider not in PROVIDERS:
+            console.print(
+                f"[red]Error:[/red] unknown provider {provider!r}. One of: {', '.join(PROVIDERS)}"
+            )
+            raise typer.Exit(1)
+        if not endpoint or not access_key:
+            console.print(
+                "[red]Error:[/red] --endpoint and --access-key are required for an S3 account"
+            )
+            raise typer.Exit(1)
+        if not secret_key:
+            secret_key = typer.prompt("Secret key", hide_input=True)
+        storage_config = {
             "endpoint": endpoint,
             "access_key": access_key,
             "secret_key": secret_key,
@@ -168,7 +205,13 @@ def add_storage(
             "driver": "csi",
             "csi_driver": "ru.yandex.s3.csi",
             **({"bucket": bucket} if bucket else {}),
-        },
+        }
+
+    payload = {
+        "name": name,
+        "storage_type": kind,
+        "description": description,
+        "config": storage_config,
         "layout_version": "v2",
         "path_config": {
             "artifacts": "artifacts",
@@ -179,15 +222,16 @@ def add_storage(
         },
     }
 
-    response = _call(
+    created = _call(
         "POST", _base(config, workspace), _headers(config, workspace), config.verify_ssl, payload
     )
-    created = response.json()
     scope = "workspace" if workspace else "organization"
     output.emit(
         created,
         lambda: console.print(
-            f"[green]✓[/green] Added [bold]{name}[/bold] ({scope}-wide, {provider}, models as "
+            f"[green]✓[/green] Added [bold]{name}[/bold] ({scope}-wide, "
+            + ("Azure Blob Storage" if kind == "azure" else provider)
+            + ", models as "
             + ("git repositories" if plane == "git" else "objects")
             + ")"
         ),
@@ -267,10 +311,9 @@ def delete_storage(
     scope = "workspace" if workspace else "organization"
 
     if not yes:
-        typer.confirm(
+        output.confirm(
             f"Remove the {scope}-wide storage account {name!r}? "
-            "Workspaces already pointing at it will lose their storage configuration.",
-            abort=True,
+            "Workspaces already pointing at it will lose their storage configuration."
         )
 
     url = _base(config, workspace) + f"/{name}"

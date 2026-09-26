@@ -88,6 +88,13 @@ class InferenceServer(BaseModel):
     quantization: Optional[str] = None
     accelerator_family: Optional[str] = None
     accelerator_note: Optional[str] = None
+    # Where callers reach it, what the model said about itself (its README's
+    # base model, its precision, its MTP head), the recipe's opt-in features
+    # it runs with, and the engine inside its image.
+    endpoint_name: Optional[str] = None
+    model_facts: Optional[dict] = None
+    features: List[str] = []
+    engine_version: Optional[str] = None
     lora_modules: List[LoRAModuleInfo] = []  # LoRA adapters loaded on base model
     owner_id: str
     created_at: Optional[datetime] = None
@@ -152,6 +159,8 @@ class CreateInferenceServerRequest(BaseModel):
     endpoint_name: Optional[str] = None
     extra_args: Optional[List[str]] = None
     served_model_names: Optional[List[str]] = None
+    features: Optional[List[str]] = None
+    dry_run: Optional[bool] = None
 
     # Where some of those extra args came from, when they came from the model's
     # published recipe rather than from a person.
@@ -215,6 +224,18 @@ def _server_from_response(data: dict) -> InferenceServer:
         api_key=data.get("api_key"),
         error=data.get("error"),
         enable_tracing=data.get("enable_tracing", False),
+        extra_args=data.get("extra_args") or [],
+        recipe_source=data.get("recipe_source"),
+        recipe_note=data.get("recipe_note"),
+        max_model_len=data.get("max_model_len"),
+        tensor_parallel=data.get("tensor_parallel"),
+        quantization=data.get("quantization"),
+        accelerator_family=data.get("accelerator_family"),
+        accelerator_note=data.get("accelerator_note"),
+        endpoint_name=data.get("endpoint_name"),
+        model_facts=data.get("model_facts"),
+        features=data.get("features") or [],
+        engine_version=data.get("engine_version"),
         lora_modules=lora_modules,
         owner_id=data.get("owner_id", ""),
         created_at=data.get("created_at"),
@@ -295,12 +316,20 @@ def deploy(
     endpoint: Optional[str] = None,
     extra_args: Optional[List[str]] = None,
     served_names: Optional[List[str]] = None,
+    features: Optional[List[str]] = None,
+    dry_run: bool = False,
     wait: bool = False,
     timeout: int = 600,
     workspace: Optional[str] = None,
-) -> InferenceServer:
+):
     """
     Deploy a new inference server.
+
+    The engine's arguments come from the model's published recipe, found by
+    its id or -- for a path or an unpublished name -- by what its own README
+    and config say it is. Pass dry_run=True to see them first: the answer is
+    the plan (recipe, arguments, the opt-in features the model offers here,
+    what the model said about itself), and nothing is created.
 
     Args:
         name: Server name
@@ -328,7 +357,9 @@ def deploy(
         max_replicas: Maximum number of replicas for autoscaling
         max_model_len: Maximum model context length (vLLM)
         tensor_parallel: Tensor parallel size (vLLM)
-        quantization: Quantization method (vLLM: "awq", "squeezellm", "gptq")
+        quantization: Leave None for a checkpoint that declares its own
+            quantization in config.json (compressed-tensors, NVFP4, FP8, AWQ,
+            GPTQ); the engine reads it. Only to force one.
         gpu_memory_util: GPU memory utilization (vLLM, 0.0-1.0)
         enforce_eager: Disable CUDA graphs (vLLM, for unsupported GPUs)
         lora_modules: List of LoRA adapters to load on top of base model
@@ -415,6 +446,8 @@ def deploy(
         endpoint_name=endpoint,
         extra_args=extra_args,
         served_model_names=served_names,
+        features=features,
+        dry_run=dry_run or None,
     )
 
     response = client.post(
@@ -422,6 +455,8 @@ def deploy(
         json=request.model_dump(exclude_none=True),
         workspace=workspace,
     )
+    if dry_run:
+        return response
     server = _server_from_response(response)
 
     if wait:
@@ -534,10 +569,17 @@ def update(
     gpu: Optional[float] = None,
     max_model_len: Optional[int] = None,
     enforce_eager: Optional[bool] = None,
+    gpu_memory_util: Optional[float] = None,
+    served_model_names: Optional[List[str]] = None,
+    features: Optional[List[str]] = None,
+    endpoint: Optional[str] = None,
     workspace: Optional[str] = None,
 ) -> InferenceServer:
     """
     Change how an inference server runs, and deploy it again.
+
+    Moving it behind another endpoint (endpoint=) is the exception: that is
+    routing, takes effect at once, and redeploys nothing.
 
     The engine reads its flags when it starts, so a change means replacing the
     workload -- but not the server. It keeps its ID, its endpoint and its key,
@@ -554,6 +596,10 @@ def update(
         gpu: GPUs to allocate
         max_model_len: Maximum sequence length
         enforce_eager: Disable CUDA graphs, for GPUs that need it
+        gpu_memory_util: Fraction of GPU memory the engine may take, above 0
+            and at most 1 (vLLM)
+        served_model_names: The names callers ask for this model by. The
+            endpoint routes by them, so renaming one moves its callers.
         workspace: Workspace ID (uses default if not specified)
 
     Returns:
@@ -574,6 +620,10 @@ def update(
             "gpu": gpu,
             "max_model_len": max_model_len,
             "enforce_eager": enforce_eager,
+            "gpu_memory_util": gpu_memory_util,
+            "served_model_names": served_model_names,
+            "features": features,
+            "endpoint_name": endpoint,
         }.items()
         if value is not None
     }
@@ -584,7 +634,27 @@ def update(
     response = client.put(f"/inference-servers/{server_id}", json=body, workspace=workspace)
     # The update endpoint answers with the server itself, unlike restart, which
     # answers with a message: this one returns something that changed.
-    return InferenceServer(**response)
+    return _server_from_response(response)
+
+
+def metrics(server_id: str, range: str = "24h", workspace: Optional[str] = None) -> dict:
+    """
+    What a model server has been doing, minute by minute: requests served and
+    failed, tokens, time to first token, time between tokens, end-to-end
+    latency (seconds, p50/p90/p99), and -- on plans with advanced metrics --
+    request lengths, the queue and the caches.
+
+    Args:
+        server_id: Server ID
+        range: 1h, 6h, 24h, 7d, 30d or 90d, within what the plan keeps
+        workspace: Workspace ID (uses default if not specified)
+
+    Returns:
+        ``{"step_seconds", "advanced", "retention_days", "servers": [{"server_id",
+        "name", "model", "kind", "points": [...]}]}``
+    """
+    client = get_client()
+    return client.get(f"/inference-servers/{server_id}/metrics", params={"range": range}, workspace=workspace)
 
 
 def list_types(workspace: Optional[str] = None) -> list:

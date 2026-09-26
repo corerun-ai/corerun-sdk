@@ -36,30 +36,10 @@ def _call(method: str, path: str, json_body=None):
     belongs to the organization and is granted into workspaces rather than
     living in one.
     """
-    import httpx
+    from corerun.cli import http
 
-    from corerun.exceptions import unreachable
-
-    config = _require_credentials()
-    url = config.api_url.rstrip("/") + "/tenant" + path
-    headers = {"Authorization": f"Bearer {config.auth_token}"}
-
-    try:
-        response = httpx.request(
-            method, url, headers=headers, json=json_body, timeout=60.0, verify=config.verify_ssl
-        )
-    except httpx.ConnectError as e:
-        raise unreachable(url, e) from e
-
-    if response.status_code >= 400:
-        try:
-            body = response.json()
-            message = body.get("message") or body.get("error") or response.text
-        except Exception:
-            message = f"{response.status_code} {response.text}"
-        console.print(f"[red]Error:[/red] {message}")
-        raise typer.Exit(1)
-    return response.json() if response.content else {}
+    _require_credentials()
+    return http.request(method, "/tenant" + path, json=json_body)
 
 
 def _get(path: str):
@@ -179,7 +159,7 @@ def delete_group(
         corerun groups delete speech-team
     """
     if not yes:
-        typer.confirm(f"Delete {name}? Everyone in it loses the access it granted.", abort=True)
+        output.confirm(f"Delete {name}? Everyone in it loses the access it granted.")
     _delete(f"/groups/{name}")
     console.print(f"[green]Deleted {name}[/green]")
 

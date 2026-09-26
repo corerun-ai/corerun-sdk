@@ -262,7 +262,7 @@ def prepare(
 
 def prepare_host(
     name: str,
-    architecture: str = "amd64",
+    architecture: Optional[str] = None,
     os: str = "linux",
     accelerator_family: Optional[str] = None,
     tenant_wide: bool = False,
@@ -277,7 +277,8 @@ def prepare_host(
 
     Args:
         name: Cluster name, unique within the tenant
-        architecture: "amd64" or "arm64". Forced to "arm64" for darwin.
+        architecture: "amd64" or "arm64". Usually left out: the installer
+            detects it, and the platform takes what the connected host reports.
         os: "linux" or "darwin"
         accelerator_family: What this machine's cards are -- a family (hopper)
             or a card (h100). A host has no pod profiles, so this is the only
@@ -301,9 +302,9 @@ def prepare_host(
         json={
             "name": name,
             "type": "host",
-            "architecture": architecture,
             "os": os,
             "workspace_scope": _scope(tenant_wide),
+            **({"architecture": architecture} if architecture else {}),
             **({"accelerator_family": accelerator_family} if accelerator_family else {}),
         },
         workspace=workspace,
@@ -429,3 +430,32 @@ def revoke_token(name: str, workspace: Optional[str] = None) -> None:
     """
     client = get_client()
     client.delete(f"/clusters/{name}/token", workspace=workspace)
+
+
+def set_scope(
+    name: str,
+    workspace_id: Optional[str] = None,
+    organization: bool = False,
+    workspace: Optional[str] = None,
+) -> dict:
+    """
+    Move a cluster or server between one workspace and the whole organisation.
+
+    Nothing is reinstalled on the machine. Giving a shared one to a single
+    workspace is refused while other workspaces have work running on it.
+    Needs an organisation administrator.
+
+    Args:
+        name: Cluster name
+        workspace_id: The workspace it should belong to alone
+        organization: Share it with every workspace instead
+    """
+    if organization == bool(workspace_id):
+        raise ValueError("give it to one workspace (workspace_id) or share it (organization=True)")
+    body = {"scope": "organization"} if organization else {"scope": "workspace", "workspace_id": workspace_id}
+    return get_client().put(f"/tenant/shared/clusters/{name}/scope", json=body, workspace=workspace)
+
+
+def organisation_workspaces(workspace: Optional[str] = None) -> list:
+    """Every workspace in the organisation, for an administrator."""
+    return get_client().get("/tenant/workspaces", workspace=workspace).get("workspaces") or []

@@ -1,15 +1,11 @@
 """
-Fetching a model out of the registry's git plane.
+Moving a model in and out of the registry's git plane.
 
 Model weights are LFS objects in a repository the platform serves through its
-own git-proxy, so a pull is a clone plus an LFS fetch. Both are driven here by
-running git, because reimplementing the smart-HTTP and LFS batch protocols to
-avoid a dependency the user already has would be a poor trade.
-
-Progress comes from git-lfs itself: given GIT_LFS_PROGRESS it writes one line
-per chunk to a file, which is the only honest source of byte counts -- the
-alternative, scraping its terminal output, changes shape between versions and
-between a TTY and a pipe.
+own git-proxy. git carries the commits; the weights go through this SDK's own
+LFS client (corerun.lfs) in both directions -- ranged and resumable on the way
+down, streamed straight from disk on the way up -- so git is the only tool a
+machine needs. git-lfs is never run.
 """
 
 from __future__ import annotations
@@ -20,6 +16,7 @@ import subprocess
 import tempfile
 from base64 import b64encode
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlparse
@@ -247,18 +244,22 @@ def push(
     report = report or (lambda _: None)
 
     git = _require("git")
-    lfs = _require("git-lfs")
 
     if not source.is_dir():
         raise PullError(f"{source} is not a directory")
 
     credential = b64encode(f"corerun:{api_key}".encode()).decode()
-    auth = ["-c", f"http.extraHeader=Authorization: Basic {credential}"]
-    environment = {
-        **os.environ,
-        "PATH": str(Path(lfs).parent) + os.pathsep + os.environ.get("PATH", ""),
-        "GIT_TERMINAL_PROMPT": "0",
-    }
+    auth = [
+        "-c", f"http.extraHeader=Authorization: Basic {credential}",
+        # The pointers are written here, not by git-lfs's clean filter, so a
+        # git-lfs the user has installed must pass them through untouched --
+        # and a machine without it must not fail looking for it.
+        "-c", "filter.lfs.process=",
+        "-c", "filter.lfs.smudge=cat",
+        "-c", "filter.lfs.clean=cat",
+        "-c", "filter.lfs.required=false",
+    ]
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
     with tempfile.TemporaryDirectory() as scratch:
         work = Path(scratch) / "repo"
@@ -279,7 +280,8 @@ def push(
         # Cloned rather than initialised so a second push adds a commit to the
         # existing history instead of proposing an unrelated one, which the
         # server would refuse. A repository with no commits yet clones empty,
-        # which is fine.
+        # which is fine. Skipping the smudge keeps a git-lfs the user happens
+        # to have installed from downloading the previous version's weights.
         report(PullProgress(stage="clone", detail=repo_url))
         run(
             ["clone", "--depth", "1", repo_url, str(work)],
@@ -287,16 +289,16 @@ def push(
             what="clone",
         )
 
-        run(["lfs", "install", "--local"], cwd=work, what="enabling lfs")
-        run(["lfs", "track", *LFS_PATTERNS], cwd=work, what="tracking weights")
-
         report(PullProgress(stage="copy", detail=str(source)))
         target = work / dest_subdir if dest_subdir else work
         if target.exists():
             shutil.rmtree(target)
         # The whole tree, so a push is the model as it is now rather than a
-        # merge of it with whatever a previous version left behind.
-        shutil.copytree(source, target)
+        # merge of it with whatever a previous version left behind. Weights are
+        # never copied: each is hashed where it lies and a pointer written in
+        # its place, which is what git-lfs's clean filter would have committed.
+        objects = _stage(source, target)
+        _track(work / ".gitattributes")
 
         run(["add", "-A"], cwd=work, what="staging")
 
@@ -309,8 +311,50 @@ def push(
         run(["-c", "user.email=cli@corerun.local", "-c", "user.name=corerun CLI",
              "commit", "-m", message], cwd=work, what="commit")
 
+        # Objects before refs: a pushed commit must never name weights the
+        # store does not have.
+        report(PullProgress(stage="upload", detail="weights"))
+        try:
+            lfs_transfer.upload_all(repo_url, api_key, objects)
+        except lfs_transfer.TransferError as e:
+            raise PullError(f"uploading weights failed: {e}") from e
+
         report(PullProgress(stage="upload", detail="pushing"))
-        run(["push", "origin", "HEAD:refs/heads/main"], cwd=work, what="push")
+        run(["push", "origin", "HEAD:refs/heads/main"], cwd=work, what="push",
+            env_extra={"GIT_LFS_SKIP_PUSH": "1"})
 
         sha = run(["rev-parse", "HEAD"], cwd=work, what="reading commit")
         return sha.stdout.strip()
+
+
+def _is_weight(path: Path) -> bool:
+    return any(fnmatch(path.name, pattern) for pattern in LFS_PATTERNS)
+
+
+def _stage(source: Path, target: Path) -> "list[lfs_transfer.LocalObject]":
+    """Copy source into target, writing a pointer for each weight file."""
+    objects = []
+    for path in sorted(source.rglob("*")):
+        rel = path.relative_to(source)
+        if ".git" in rel.parts:
+            continue
+        dest = target / rel
+        if path.is_dir():
+            dest.mkdir(parents=True, exist_ok=True)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if _is_weight(path):
+            obj = lfs_transfer.hash_file(path)
+            dest.write_text(lfs_transfer.pointer_text(obj))
+            objects.append(obj)
+        else:
+            shutil.copy2(path, dest)
+    return objects
+
+
+def _track(attributes: Path) -> None:
+    """Mark the weight patterns as LFS, as "git lfs track" would, keeping what is there."""
+    existing = attributes.read_text().splitlines() if attributes.exists() else []
+    tracked = {line.split()[0] for line in existing if line.strip()}
+    lines = existing + [f"{p} filter=lfs diff=lfs merge=lfs -text" for p in LFS_PATTERNS if p not in tracked]
+    attributes.write_text("\n".join(lines) + "\n")

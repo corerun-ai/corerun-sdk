@@ -20,7 +20,8 @@ Usage:
     corerun genai sessions list
     corerun traces get <trace-id>
     corerun finetune list
-    corerun finetune create --name my-ft --framework unsloth --model meta-llama/Llama-3.2-3B-Instruct --dataset <id> --compute dgx
+    corerun finetune create --name my-ft --framework unsloth \\
+        --model meta-llama/Llama-3.2-3B-Instruct --dataset <id> --compute dgx
     corerun finetune wait <job-id>
     corerun inference list
     corerun inference deploy --name mistral --model mistralai/Mistral-7B --compute dgx --gpu 1
@@ -37,29 +38,31 @@ Usage:
 import typer
 from rich.console import Console
 
+from corerun.cli import output
 from corerun.cli.accelerators import app as accelerators_app
+from corerun.cli.org import app as org_app
+from corerun.cli.prices import app as prices_app
 from corerun.cli.auth import app as auth_app
 from corerun.cli.catalogue import app as catalogue_app
 from corerun.cli.clusters import app as clusters_app
 from corerun.cli.compute import app as compute_app
 from corerun.cli.datasets import app as datasets_app
 from corerun.cli.endpoints import app as endpoints_app
-from corerun.cli.evaluations import app as evaluations_app
-from corerun.cli.tokens import app as tokens_app
-from corerun.cli.genai import app as genai_app
 from corerun.cli.finetune import app as finetune_app
+from corerun.cli.genai import app as genai_app
+from corerun.cli.groups import app as groups_app
 from corerun.cli.hosts import app as hosts_app
 from corerun.cli.inference import app as inference_app
 from corerun.cli.jobs import app as jobs_app
 from corerun.cli.notebooks import app as notebooks_app
 from corerun.cli.quota import app as quota_app
 from corerun.cli.registry import app as registry_app
+from corerun.cli.repos import app as repos_app
 from corerun.cli.skills import app as skills_app
 from corerun.cli.storage import app as storage_app
-from corerun.cli.groups import app as groups_app
-from corerun.cli.workspace import app as workspace_app
-from corerun.cli import output
+from corerun.cli.tokens import app as tokens_app
 from corerun.cli.traces import app as traces_app
+from corerun.cli.workspace import app as workspace_app
 
 console = Console()
 
@@ -69,6 +72,29 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=True,
 )
+
+
+def run() -> None:
+    """The entry point: the commands, and one sentence for any failure.
+
+    A command that fails raises a CoreRunError -- the SDK client and the
+    CLI's own request helper both do -- and this turns it into the line the
+    user reads and an exit status a script can test. Without it Typer printed
+    a traceback, and before that a decode error named nothing that happened.
+    """
+    import json as _json
+
+    from corerun.exceptions import CoreRunError
+    from corerun.http import RETRY_HINT
+
+    try:
+        app()
+    except CoreRunError as e:
+        output.fail(str(e))
+        raise SystemExit(1)
+    except _json.JSONDecodeError as e:
+        output.fail(f"The platform's answer was not JSON ({e}). {RETRY_HINT}")
+        raise SystemExit(1)
 
 
 @app.callback()
@@ -91,13 +117,13 @@ app.add_typer(
 app.add_typer(auth_app, name="auth", help="Authentication commands")
 app.add_typer(datasets_app, name="datasets", help="Dataset management")
 app.add_typer(jobs_app, name="jobs", help="Job management")
+app.add_typer(repos_app, name="repos", help="Code repositories for training jobs")
 app.add_typer(notebooks_app, name="notebooks", help="Notebook sessions")
 app.add_typer(registry_app, name="models", help="Model registry")
 app.add_typer(skills_app, name="skills", help="corerun skills for coding agents")
 app.add_typer(traces_app, name="traces", help="Trace management")
 app.add_typer(finetune_app, name="finetune", help="Fine-tuning jobs")
 app.add_typer(genai_app, name="genai", help="Agent traces, sessions and retention")
-app.add_typer(evaluations_app, name="evaluations", help="Run benchmarks against a model")
 app.add_typer(tokens_app, name="tokens", help="Tokens for exporters, CI and scripts")
 app.add_typer(inference_app, name="inference", help="Inference servers")
 app.add_typer(endpoints_app, name="endpoints", help="Model endpoints")
@@ -110,11 +136,14 @@ app.add_typer(quota_app, name="quota", help="Workspace quota")
 app.add_typer(storage_app, name="storage", help="Storage accounts")
 app.add_typer(workspace_app, name="workspace", help="Workspace selection")
 app.add_typer(groups_app, name="groups", help="Groups, and the roles they hold")
+app.add_typer(org_app, name="org", help="Your organisation: usage, security settings and model prices")
+app.add_typer(prices_app, name="prices", help="Providers, and what their models cost")
 
 # Aliases for convenience
 app.add_typer(datasets_app, name="data", hidden=True)
 app.add_typer(datasets_app, name="ds", hidden=True)
 app.add_typer(registry_app, name="registry", hidden=True)
+app.add_typer(repos_app, name="repo", hidden=True)
 # Singular reads better for the commands that act on one model ("model pull"),
 # and is what people type; both names reach the same commands.
 app.add_typer(registry_app, name="model", hidden=True)

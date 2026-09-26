@@ -48,7 +48,10 @@ DEFAULT_JOBS = 8
 # Status codes worth trying again. All of them mean "not now" rather than "not
 # ever": a proxy under load sheds requests, and a transfer of many gigabytes
 # through one will meet that at some point.
-RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+#
+# 520-524 are Cloudflare's: the origin was unreachable or slow to answer through
+# the edge -- the same "not now", from the proxy in front of the platform.
+RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
 
 # Enough attempts to ride out a proxy restart, not so many that a genuine
 # failure takes minutes to report.
@@ -387,3 +390,246 @@ def fetch_all(
                 report=report,
             )
     return len(pointers)
+
+
+# ── Uploading ────────────────────────────────────────────────────────────────
+#
+# The other half, so a push needs git and nothing else. git-lfs does this as a
+# clean filter on commit plus a pre-push hook; here the pointers are written
+# directly and the objects sent before the refs, which is the order the
+# protocol wants: a pushed commit must never name an object the store lacks.
+
+
+@dataclass
+class LocalObject:
+    """A file to be stored as an LFS object, and the pointer that stands in for it."""
+
+    oid: str
+    size: int
+    source: Path
+
+
+def hash_file(path: Path) -> LocalObject:
+    """The object id and size of a file, read once in blocks."""
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+            size += len(block)
+    return LocalObject(oid=digest.hexdigest(), size=size, source=path)
+
+
+def pointer_text(obj: LocalObject) -> str:
+    """The pointer git-lfs itself would write, byte for byte."""
+    return f"version https://git-lfs.github.com/spec/v1\noid sha256:{obj.oid}\nsize {obj.size}\n"
+
+
+def _credential_for(href: str, headers: Dict[str, str], api_key: str) -> Dict[str, str]:
+    """Our credential for our own server; nothing extra for a presigned URL."""
+    out = dict(headers)
+    if "Authorization" not in out and not _presigned(href):
+        out["Authorization"] = "Basic " + base64.b64encode(f"corerun:{api_key}".encode()).decode()
+    return out
+
+
+def upload_all(
+    repo_url: str,
+    api_key: str,
+    objects: List[LocalObject],
+    report: Optional[Callable[[str, int, int], None]] = None,
+) -> int:
+    """Send every object the server does not already have; return how many were sent.
+
+    The server answers an object it already holds with no actions, so a model
+    that shares its base weights with another uploads only what is new.
+    """
+    unique = list({o.oid: o for o in objects}.values())
+    if not unique:
+        return 0
+
+    timeout = httpx.Timeout(30.0, write=300.0, read=300.0)
+    sent = 0
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.post(
+            repo_url.rstrip("/") + "/info/lfs/objects/batch",
+            headers={"Accept": "application/vnd.git-lfs+json", "Content-Type": "application/vnd.git-lfs+json"},
+            auth=("corerun", api_key),
+            # multipart-basic first: a large object then arrives as parts no
+            # bigger than the server says, which is what gets it past a store
+            # or an edge that refuses one request that large.
+            json={"operation": "upload", "transfers": ["multipart-basic", "basic"], "objects": [{"oid": o.oid, "size": o.size} for o in unique]},
+        )
+        if response.status_code >= 400:
+            raise TransferError(f"the server refused the object list ({response.status_code})")
+
+        wanted = {o.oid: o for o in unique}
+        for entry in response.json().get("objects", []):
+            obj = wanted.get(entry.get("oid", ""))
+            if obj is None:
+                continue
+            if entry.get("error"):
+                raise TransferError(f"{obj.source.name}: {entry['error'].get('message', 'refused')}")
+            actions = entry.get("actions") or {}
+            if actions.get("parts"):
+                _put_parts(client, actions, obj, api_key, report)
+                sent += 1
+                continue
+            upload = actions.get("upload")
+            if not upload:
+                continue  # already stored
+            _put(client, upload["href"], upload.get("header") or {}, obj, api_key, report)
+            verify = actions.get("verify")
+            if verify:
+                answer = client.post(
+                    verify["href"],
+                    headers=_credential_for(verify["href"], {**(verify.get("header") or {}), "Content-Type": "application/vnd.git-lfs+json"}, api_key),
+                    json={"oid": obj.oid, "size": obj.size},
+                )
+                if answer.status_code >= 400:
+                    raise TransferError(f"{obj.source.name} did not arrive intact ({answer.status_code})")
+            sent += 1
+    return sent
+
+
+def _put(
+    client: httpx.Client,
+    href: str,
+    headers: Dict[str, str],
+    obj: LocalObject,
+    api_key: str,
+    report: Optional[Callable[[str, int, int], None]],
+) -> None:
+    """One object as one PUT, streamed from disk, retried while the failure looks temporary.
+
+    A single request, as git-lfs's basic transfer makes: an object store takes
+    a presigned PUT of up to 5 GB, which covers the shards a checkpoint is
+    normally split into.
+    """
+    request_headers = _credential_for(href, headers, api_key)
+    # An explicit length, so the body is sent as-is rather than chunked, which
+    # a presigned S3 PUT rejects.
+    request_headers["Content-Length"] = str(obj.size)
+    request_headers.setdefault("Content-Type", "application/octet-stream")
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        counter = _Counter(0, obj.size, obj.source.name, report)
+
+        def body():
+            with obj.source.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    counter.advance(len(block))
+                    yield block
+
+        try:
+            response = client.put(href, headers=request_headers, content=body())
+            if response.status_code in RETRYABLE_STATUS:
+                raise _Transient(f"{response.status_code}")
+            if response.status_code >= 400:
+                raise TransferError(f"{obj.source.name}: the store refused it ({response.status_code})")
+            return
+        except (_Transient, httpx.TransportError) as e:
+            if attempt == MAX_ATTEMPTS:
+                raise TransferError(f"{obj.source.name} failed after {MAX_ATTEMPTS} attempts: {e}") from e
+            time.sleep(min(2 ** attempt, 30) + random.random())
+
+
+class _FileSlice:
+    """A byte range of a file, read in blocks as it is sent."""
+
+    def __init__(self, path: Path, pos: int, size: int, counter: "_Counter"):
+        self.path, self.pos, self.size, self.counter = path, pos, size, counter
+
+    def __iter__(self):
+        remaining = self.size
+        with self.path.open("rb") as handle:
+            handle.seek(self.pos)
+            while remaining > 0:
+                block = handle.read(min(1024 * 1024, remaining))
+                if not block:
+                    break
+                remaining -= len(block)
+                self.counter.advance(len(block))
+                yield block
+
+
+def _put_parts(
+    client: httpx.Client,
+    actions: Dict,
+    obj: LocalObject,
+    api_key: str,
+    report: Optional[Callable[[str, int, int], None]],
+    jobs: int = 4,
+) -> None:
+    """Send an object as the parts the server laid out, then commit them.
+
+    Parts go several at a time, each retried on its own while the failure
+    looks temporary, so a dropped connection costs one part rather than the
+    object. Anything that fails for good aborts the upload, so the store is
+    not left holding parts nobody will commit.
+    """
+    parts = actions["parts"]
+    counter = _Counter(0, obj.size, obj.source.name, report)
+    etags: List[Optional[str]] = [None] * len(parts)
+
+    def send(index: int) -> None:
+        part = parts[index]
+        href = part["href"]
+        headers = _credential_for(href, part.get("header") or {}, api_key)
+        headers["Content-Length"] = str(part["size"])
+        headers.setdefault("Content-Type", "application/octet-stream")
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            before = counter.mark()
+            try:
+                response = client.put(href, headers=headers, content=_FileSlice(obj.source, part["pos"], part["size"], counter))
+                if response.status_code in RETRYABLE_STATUS:
+                    raise _Transient(str(response.status_code))
+                if response.status_code >= 400:
+                    raise TransferError(f"{obj.source.name}: part {index + 1} refused ({response.status_code})")
+                # Azure answers a block with no ETag worth keeping; the
+                # commit names blocks by position, so any value serves.
+                etags[index] = response.headers.get("ETag") or f"part-{index + 1}"
+                return
+            except (_Transient, httpx.TransportError) as e:
+                counter.reset(before)
+                if attempt == MAX_ATTEMPTS:
+                    raise TransferError(f"{obj.source.name}: part {index + 1} failed after {MAX_ATTEMPTS} attempts: {e}") from e
+                time.sleep(min(2 ** attempt, 30) + random.random())
+
+    def abort() -> None:
+        action = actions.get("abort")
+        if action:
+            try:
+                client.post(action["href"], headers=_credential_for(action["href"], action.get("header") or {}, api_key))
+            except httpx.HTTPError:
+                pass
+
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            for future in as_completed([pool.submit(send, i) for i in range(len(parts))]):
+                future.result()
+        commit = actions["commit"]
+        response = client.post(
+            commit["href"],
+            headers=_credential_for(commit["href"], {**(commit.get("header") or {}), "Content-Type": "application/vnd.git-lfs+json"}, api_key),
+            json={
+                "oid": obj.oid,
+                "size": obj.size,
+                "parts": [{"part_number": i + 1, "etag": e} for i, e in enumerate(etags)],
+            },
+        )
+        if response.status_code >= 400:
+            raise TransferError(f"{obj.source.name}: assembling the parts failed ({response.status_code})")
+    except BaseException:
+        abort()
+        raise
+
+    verify = actions.get("verify")
+    if verify:
+        answer = client.post(
+            verify["href"],
+            headers=_credential_for(verify["href"], {**(verify.get("header") or {}), "Content-Type": "application/vnd.git-lfs+json"}, api_key),
+            json={"oid": obj.oid, "size": obj.size},
+        )
+        if answer.status_code >= 400:
+            raise TransferError(f"{obj.source.name} did not arrive intact ({answer.status_code})")

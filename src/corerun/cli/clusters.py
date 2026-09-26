@@ -415,7 +415,7 @@ def remove_cluster(
     _init_client()
 
     if not yes and not output.json_mode():
-        typer.confirm(f"Remove the cluster '{name}' and its operator's resources?", abort=True)
+        output.confirm(f"Remove the cluster '{name}' and its operator's resources?")
 
     import corerun.clusters as clusters
 
@@ -474,10 +474,9 @@ def rotate_token(
     _init_client()
 
     if not yes and not output.json_mode():
-        typer.confirm(
+        output.confirm(
             f"Rotate {name}'s token? A connected operator will drop off until it is "
-            "given the new one",
-            abort=True,
+            "given the new one"
         )
 
     import corerun.clusters as clusters
@@ -517,9 +516,8 @@ def revoke_token(
     _init_client()
 
     if not yes and not output.json_mode():
-        typer.confirm(
-            f"Revoke {name}'s operator token? Its operator will be locked out",
-            abort=True,
+        output.confirm(
+            f"Revoke {name}'s operator token? Its operator will be locked out"
         )
 
     import corerun.clusters as clusters
@@ -539,3 +537,55 @@ def revoke_token(
         )
 
     output.emit(result, render)
+
+
+@app.command("scope")
+def set_scope(
+    name: str = typer.Argument(..., metavar="NAME", help="Cluster or server name"),
+    to_workspace: Optional[str] = typer.Option(
+        None, "--workspace-only", help="Give it to this workspace alone (id, slug or name)"
+    ),
+    organization: bool = typer.Option(
+        False, "--organization", help="Share it with every workspace in the organisation"
+    ),
+):
+    """
+    Move a cluster or server between one workspace and the whole organisation.
+
+    Nothing is reinstalled on the machine. Giving a shared one to a single
+    workspace is refused while other workspaces have work running on it.
+    Needs an organisation administrator.
+
+    Example:
+        corerun clusters scope datacore-host --organization
+        corerun clusters scope datacore-host --workspace-only ml-research
+    """
+    if organization == bool(to_workspace):
+        console.print("[red]Error:[/red] give --workspace-only WORKSPACE or --organization")
+        raise typer.Exit(2)
+
+    _init_client()
+    import corerun.clusters as clusters
+    from corerun.cli import workspace as ws_cli
+
+    workspace_id = None
+    if to_workspace:
+        try:
+            match = ws_cli.resolve(clusters.organisation_workspaces(), to_workspace)
+        except Exception as e:
+            raise output.fail(str(e))
+        if not match:
+            console.print(f"[red]Error:[/red] no workspace {to_workspace!r} in this organisation")
+            raise typer.Exit(1)
+        workspace_id = match["id"]
+
+    try:
+        result = clusters.set_scope(name, workspace_id=workspace_id, organization=organization)
+    except Exception as e:
+        raise output.fail(str(e))
+
+    output.emit(result, lambda: console.print(
+        f"[green]{name}[/green] is now "
+        + ("shared with every workspace" if result.get("scope") == "tenant" else f"{to_workspace}'s alone")
+        + " [dim](nothing was reinstalled)[/dim]"
+    ))

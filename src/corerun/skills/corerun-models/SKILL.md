@@ -44,10 +44,10 @@ corerun models pull <name>@1 ./dest
 corerun models pull <name> --alias champion
 ```
 
-Weights live in git with LFS by default, so **`git` and `git-lfs` must both be
-installed** — without git-lfs the pull appears to work and silently leaves
-pointer files where the weights should be. `brew install git-lfs && git lfs
-install`.
+`corerun models push` and `pull` need only **`git`** on the machine: the CLI
+moves the weights itself — large files in parts, so any size gets through,
+downloads in parallel ranges that resume. `git-lfs` is needed only to work on
+a model repository with plain git, and for `corerun models import --local`.
 
 The credential is the one from `corerun login`; nothing separate is issued. It
 goes through the platform's git proxy, which checks access per request, and is

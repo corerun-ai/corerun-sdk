@@ -72,23 +72,16 @@ ask about afterwards. That is worse than an error, because nothing looks wrong.
 
 ## Evaluation runs
 
-Starting one and reading one are different commands, because they are
-different things: an evaluation is a job on your compute, and its result is a
-run in an experiment.
+An evaluation run is an experiment's record of one scoring pass: an evaluate
+from the SDK over a dataset, or issue detection over traces.
 
 ```bash
-corerun evaluations start gsm8k --compute <target> --endpoint <name> --limit 10
-corerun evaluations list
 corerun genai evaluations -e <experiment>     # what they concluded
 ```
 
-`start` prints two ids and they are not interchangeable: the job id is what has
-logs (`corerun jobs logs <id>`), the run id is what will carry the scores. The
-job finishing and the score appearing are not the same event.
-
-Pass `--limit` on anything exploratory. A full benchmark is thousands of model
-calls against a model somebody pays for, and the first run is usually to find
-out whether the plumbing works rather than what the model scores.
+There is no command that starts a benchmark against a model: that ran as a
+job on the workspace's compute and was withdrawn, to return as a hosted
+service. Do not look for one or improvise it with `corerun jobs`.
 
 One row per scoring pass, with a column per score it produced. The columns are
 whatever the runs carry rather than a fixed set, so a blank means that run did

@@ -356,8 +356,8 @@ def delete_trace(
     from corerun import genai
 
     trace_id = _resolve(trace_id, experiment, workspace)
-    if not yes and not typer.confirm(f"Delete trace {trace_id} and everything recorded about it?"):
-        raise typer.Exit(0)
+    if not yes:
+        output.confirm(f"Delete trace {trace_id} and everything recorded about it?")
     _called(lambda: genai.delete_traces([trace_id], experiment=experiment, workspace=workspace))
     output.emit({"deleted": trace_id}, lambda: console.print(f"[green]Deleted[/green] {trace_id}"))
 

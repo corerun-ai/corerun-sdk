@@ -39,6 +39,7 @@ class Token:
 
     key_id: str
     name: str = ""
+    description: str = ""
     scope: str = ""
     scopes: str = ""
     workspace_id: Optional[str] = None
@@ -63,6 +64,7 @@ class Token:
         return cls(
             key_id=data.get("key_id", ""),
             name=data.get("name", ""),
+            description=data.get("description", "") or "",
             scope=data.get("scope", ""),
             scopes=data.get("scopes", "") or "",
             workspace_id=data.get("workspace_id"),
@@ -84,6 +86,7 @@ def create(
     workspace_id: Optional[str] = None,
     expires_in_days: int = 0,
     workspace: Optional[str] = None,
+    description: str = "",
 ) -> Token:
     """Issue a token, returning it with its secret.
 
@@ -95,6 +98,8 @@ def create(
     config file on somebody's laptop, a date is cheaper than a revocation.
     """
     body: Dict[str, Any] = {"name": name, "scope": scope}
+    if description:
+        body["description"] = description
 
     # A workspace-scoped token needs to say which, and the answer is almost
     # always the one the caller is already working in. The API refuses without
@@ -122,5 +127,6 @@ def tokens(*, workspace: Optional[str] = None) -> List[Token]:
 
 
 def revoke(key_id: str, *, workspace: Optional[str] = None) -> None:
-    """Withdraw one. Immediate: the next request carrying it is refused."""
+    """Withdraw one. Refused everywhere within 30 seconds: the gateway checks
+    revocation on every request and remembers each answer that long."""
     get_client().delete(f"{_BASE}/{key_id}", workspace=workspace)

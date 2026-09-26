@@ -14,13 +14,9 @@ from corerun.config import Config
 from corerun.credentials import read_platform_credential
 from corerun.exceptions import (
     AuthenticationError,
-    CoreRunError,
-    NotFoundError,
-    RateLimitError,
-    ServerError,
-    ValidationError,
     unreachable,
 )
+from corerun.http import decode_response
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -67,52 +63,7 @@ class CoreRunClient:
         JSON whatever the route serves on success, so the failure path below is
         the same either way.
         """
-        # Any 2xx is a success. Listing them one at a time meant 202 read as an
-        # error: creating a notebook answers "accepted, it is starting" as soon
-        # as the record exists, and the CLI reported that as a failed create for
-        # a notebook that was coming up perfectly well.
-        if 200 <= response.status_code < 300:
-            if as_text:
-                return response.text
-            if not response.content:
-                return {}
-            return response.json()
-
-        # Parse error response
-        #
-        # Two services answer here and they do not use the same shape. The
-        # Python data service returns FastAPI's {"detail": "..."}; the Go API
-        # returns {"error": "<code>", "message": "<what happened>"}, where the
-        # code is for programs and the message is for people. Reading `error`
-        # and never `message` meant every Go API failure reached the user as a
-        # bare "not_found" or "no_storage", with the sentence explaining it
-        # thrown away -- while the same command against the data service
-        # printed a full explanation.
-        #
-        # `error` stays as the last resort: a code says more than nothing.
-        try:
-            error_data = response.json()
-            detail = (
-                error_data.get("detail")
-                or error_data.get("message")
-                or error_data.get("error")
-                or str(error_data)
-            )
-        except Exception:
-            detail = response.text or f"HTTP {response.status_code}"
-
-        if response.status_code == 401:
-            raise AuthenticationError(detail)
-        elif response.status_code == 404:
-            raise NotFoundError(detail)
-        elif response.status_code == 400 or response.status_code == 422:
-            raise ValidationError(detail)
-        elif response.status_code == 429:
-            raise RateLimitError(detail)
-        elif response.status_code >= 500:
-            raise ServerError(detail)
-        else:
-            raise CoreRunError(f"HTTP {response.status_code}: {detail}")
+        return decode_response(response, as_text=as_text)
 
     def request(
         self,

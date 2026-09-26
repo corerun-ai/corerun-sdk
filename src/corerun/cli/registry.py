@@ -143,7 +143,6 @@ def get_model(
         return
 
     console.print(f"[bold]Model: {model.name}[/bold]")
-    console.print(f"  ID: {model.id}")
     console.print(f"  Description: {model.description or '-'}")
     console.print(f"  Versions: {model.version_count}")
     console.print(f"  Latest Version: {model.latest_version}")
@@ -214,7 +213,6 @@ def create_model(
             workspace=workspace,
         )
         console.print(f"[green]Created model '{model.name}'[/green]")
-        console.print(f"  ID: {model.id}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
@@ -224,7 +222,7 @@ def create_model(
 def delete_model(
     name: str = typer.Argument(..., help="Model name"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
-    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+    force: bool = typer.Option(False, "--yes", "-y", "--force", "-f", help="Do not ask for confirmation"),
 ):
     """
     Delete a model and all its versions.
@@ -238,10 +236,7 @@ def delete_model(
     import corerun.registry as registry
 
     if not force:
-        confirm = typer.confirm(f"Delete model '{name}' and all versions?")
-        if not confirm:
-            console.print("Cancelled")
-            raise typer.Exit(0)
+        output.confirm(f"Delete model '{name}' and all versions?")
 
     try:
         registry.delete_model(name, workspace=workspace)
@@ -612,9 +607,8 @@ def set_stage(
                     break
         except Exception:
             pass
-        typer.confirm(
-            f"Move {name} v{version} to production{current}?",
-            abort=True,
+        output.confirm(
+            f"Move {name} v{version} to production{current}?"
         )
 
     try:

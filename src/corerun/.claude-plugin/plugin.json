@@ -3,6 +3,6 @@
   "description": "Drive corerun from an agent: submit and debug training jobs, fine-tune with LoRA, manage datasets and the model registry, serve models, and work with the endpoints applications call. Every skill drives the corerun CLI, so anywhere the CLI is installed and logged in, these work.",
   "author": {
     "name": "corerun",
-    "url": "https://github.com/corerunai/corerun"
+    "url": "https://github.com/corerun-ai/corerun"
   }
 }

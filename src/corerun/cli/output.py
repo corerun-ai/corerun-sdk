@@ -119,3 +119,24 @@ def fail(message: str, code: int = 1):
     else:
         errors.print(f"[red]Error:[/red] {message}")
     return typer.Exit(code)
+
+
+def confirm(prompt: str) -> None:
+    """Ask before something that cannot be undone, or stop.
+
+    Declined is exit 1, so a script can tell it from success. With no
+    terminal to ask on -- an agent, CI, a pipe -- it fails at once, saying
+    to pass --yes, rather than reading an empty answer as a "no" that exits
+    as if the thing had been done.
+    """
+    import typer
+
+    if not sys.stdin.isatty():
+        errors.print(
+            f"[red]Error:[/red] {prompt} This needs confirming and there is no "
+            "terminal to ask on; pass --yes to go ahead."
+        )
+        raise typer.Exit(2)
+    if not typer.confirm(prompt):
+        errors.print("Cancelled; nothing was changed.")
+        raise typer.Exit(1)

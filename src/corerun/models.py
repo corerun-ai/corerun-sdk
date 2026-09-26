@@ -233,6 +233,10 @@ class CreateJobRequest(BaseModel):
     datasets: Optional[List[str]] = None
     parameters: Optional[Dict[str, Any]] = None
     config: Optional[Dict[str, Any]] = None
+    code: Optional[Dict[str, Any]] = None    # {source: repo|git|volume, repo, connection_id, url, ref, path}
+    priority: Optional[str] = None           # low | normal | high
+    max_runtime_minutes: Optional[int] = None
+    install_requirements: Optional[bool] = None  # None: on when the job has code
 
 
 class ImportHuggingFaceRequest(BaseModel):
