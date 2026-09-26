@@ -5,9 +5,8 @@ description: Read and judge what an agent did on corerun — traces and their sp
 
 # corerun genai
 
-Agent traces and everything built on them. Not the same thing as
-`corerun traces`, which is the record of requests through a model endpoint —
-two features, two prefixes, and a token scoped to one does not reach the other.
+Agent traces and everything built on them: what an agent was asked, every
+step it took, what it cost, and what judges and people concluded about it.
 
 ## Everything hangs off an experiment
 
@@ -24,6 +23,7 @@ corerun genai experiments            # id and name; the id is what the rest take
 corerun genai traces list -e <experiment> [--state ERROR] [--limit 50]
 corerun genai traces get <trace-id> -e <experiment>    # the span tree, timed
 corerun genai traces delete <trace-id> -e <experiment>
+corerun genai traces assess <trace-id> correct no -e <experiment> -r "cited the wrong policy"
 corerun genai sessions list -e <experiment>            # traces grouped by conversation
 ```
 

@@ -240,7 +240,6 @@ def deploy_server(
         None, "--gpu-memory-util", help="GPU memory utilization, 0.0-1.0 (vLLM)"
     ),
     enforce_eager: bool = typer.Option(False, "--enforce-eager", help="Disable CUDA graphs (vLLM)"),
-    enable_tracing: bool = typer.Option(False, "--tracing", help="Enable MLflow tracing"),
     feature: Optional[List[str]] = typer.Option(
         None, "--feature",
         help="Turn on one of the model's published opt-in features, e.g. spec_decoding "
@@ -291,7 +290,6 @@ def deploy_server(
             quantization=quantization,
             gpu_memory_util=gpu_memory_util,
             enforce_eager=enforce_eager,
-            enable_tracing=enable_tracing,
             endpoint=endpoint,
             extra_args=list(arg) if arg else None,
             served_names=list(served_name) if served_name else None,

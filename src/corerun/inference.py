@@ -74,7 +74,6 @@ class InferenceServer(BaseModel):
     external_path: Optional[str] = None
     api_key: Optional[str] = None  # Only shown on create
     error: Optional[str] = None
-    enable_tracing: bool = False
 
     # What the engine was launched with. `corerun inference get` has printed
     # these since it was written and the model never carried them, so reaching
@@ -177,9 +176,6 @@ class CreateInferenceServerRequest(BaseModel):
     # LoRA adapter configuration
     lora_modules: Optional[List[LoRAModule]] = None
 
-    # MLflow tracing
-    enable_tracing: bool = False
-
 
 class ScaleRequest(BaseModel):
     """Request to scale an inference server."""
@@ -223,7 +219,6 @@ def _server_from_response(data: dict) -> InferenceServer:
         external_path=data.get("external_path"),
         api_key=data.get("api_key"),
         error=data.get("error"),
-        enable_tracing=data.get("enable_tracing", False),
         extra_args=data.get("extra_args") or [],
         recipe_source=data.get("recipe_source"),
         recipe_note=data.get("recipe_note"),
@@ -312,7 +307,6 @@ def deploy(
     gpu_memory_util: Optional[float] = None,
     enforce_eager: bool = False,
     lora_modules: Optional[List[LoRAModule]] = None,
-    enable_tracing: bool = False,
     endpoint: Optional[str] = None,
     extra_args: Optional[List[str]] = None,
     served_names: Optional[List[str]] = None,
@@ -363,7 +357,6 @@ def deploy(
         gpu_memory_util: GPU memory utilization (vLLM, 0.0-1.0)
         enforce_eager: Disable CUDA graphs (vLLM, for unsupported GPUs)
         lora_modules: List of LoRA adapters to load on top of base model
-        enable_tracing: Enable MLflow tracing
         wait: Wait for server to be running (default: False)
         timeout: Timeout in seconds when waiting (default: 600)
         workspace: Workspace ID (uses default if not specified)
@@ -390,7 +383,7 @@ def deploy(
             gpu=1,
         )
 
-        # Deploy with autoscaling and tracing
+        # Deploy with autoscaling
         server = corerun.inference.deploy(
             name="production-llm",
             model_id="meta-llama/Llama-2-7b-chat-hf",
@@ -398,7 +391,6 @@ def deploy(
             gpu=1,
             min_replicas=2,
             max_replicas=8,
-            enable_tracing=True,
         )
 
         # Deploy with LoRA adapter from fine-tune job
@@ -442,7 +434,6 @@ def deploy(
         gpu_memory_util=gpu_memory_util,
         enforce_eager=enforce_eager,
         lora_modules=lora_modules,
-        enable_tracing=enable_tracing,
         endpoint_name=endpoint,
         extra_args=extra_args,
         served_model_names=served_names,

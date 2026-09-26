@@ -8,7 +8,7 @@ Eleven skills that teach a coding agent to drive corerun through its CLI.
 | `corerun-quota` | What the workspace has room for, before allocating anything |
 | `corerun-datasets` | Finding, importing and inspecting datasets |
 | `corerun-jobs` | Submitting, monitoring and debugging training jobs |
-| `corerun-finetune` | LoRA and QLoRA fine-tuning with Unsloth or HuggingFace |
+| `corerun-finetune` | LoRA, QLoRA and full fine-tuning; following, stopping and registering the result |
 | `corerun-models` | The model registry — versions, stages, aliases |
 | `corerun-inference` | Serving models: deploying, scaling, why one will not start |
 | `corerun-endpoints` | The address callers use, its keys, and publishing models corerun does not run |

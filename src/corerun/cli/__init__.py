@@ -11,16 +11,13 @@ Usage:
     corerun jobs logs <job-id>
     corerun models list
     corerun models push my-model ./checkpoint -f pytorch
-    corerun models pull my-model --alias champion
+    corerun models pull my-model@2
     corerun models stage my-model 1 production
     corerun models alias my-model champion 1
-    corerun models predict my-model input.json --alias champion
-    corerun traces list
-    corerun genai traces list --state ERROR
-    corerun genai sessions list
-    corerun traces get <trace-id>
+    corerun genai traces list -e <experiment> --state ERROR
+    corerun genai sessions list -e <experiment>
     corerun finetune list
-    corerun finetune create --name my-ft --framework unsloth \\
+    corerun finetune create --name my-ft \\
         --model meta-llama/Llama-3.2-3B-Instruct --dataset <id> --compute dgx
     corerun finetune wait <job-id>
     corerun inference list
@@ -61,7 +58,6 @@ from corerun.cli.repos import app as repos_app
 from corerun.cli.skills import app as skills_app
 from corerun.cli.storage import app as storage_app
 from corerun.cli.tokens import app as tokens_app
-from corerun.cli.traces import app as traces_app
 from corerun.cli.workspace import app as workspace_app
 
 console = Console()
@@ -121,7 +117,6 @@ app.add_typer(repos_app, name="repos", help="Code repositories for training jobs
 app.add_typer(notebooks_app, name="notebooks", help="Notebook sessions")
 app.add_typer(registry_app, name="models", help="Model registry")
 app.add_typer(skills_app, name="skills", help="corerun skills for coding agents")
-app.add_typer(traces_app, name="traces", help="Trace management")
 app.add_typer(finetune_app, name="finetune", help="Fine-tuning jobs")
 app.add_typer(genai_app, name="genai", help="Agent traces, sessions and retention")
 app.add_typer(tokens_app, name="tokens", help="Tokens for exporters, CI and scripts")

@@ -75,7 +75,6 @@ class DatasetSource(str, Enum):
     HUGGINGFACE = "huggingface"
     KAGGLE = "kaggle"
     URL = "url"
-    MARKETPLACE = "marketplace"
 
 
 # =============================================================================

@@ -34,12 +34,16 @@ One Helm release, namespace `corerun` by convention:
 
 1. **Edition.** `edition: enterprise`. Forgetting it installs the hosted
    product's surface, runs unlicensed and nobody notices.
-2. **Secrets.** `secrets.jwtSecret`, `secrets.apiKeySecret` and
-   `secrets.dbEncryptionKey` default to development strings. Generate each with
-   `openssl rand -hex 32` before the first install and **keep them for the life
-   of the install**: the database encryption key decrypts every stored
-   credential and the sealed signing keys, and a changed or lost one makes
-   them unreadable. Keep a copy outside the cluster.
+2. **The encryption key.** Every stored credential and the sign-in signing
+   keys are encrypted with it. The chart generates it on the first install
+   and keeps it on every upgrade; **copy it out of the cluster straight
+   away** and keep it with the backups -- a database, or a backup of one,
+   cannot be read without it, and it can never be changed:
+   `kubectl get secret corerun-secrets -n corerun -o jsonpath='{.data.db-encryption-key}' | base64 -d`.
+   For GitOps or `helm template` (which cannot see the cluster), set
+   `secrets.dbEncryptionKey` and `postgresql.auth.password` yourself or use
+   `secrets.existingSecret`; the chart refuses an upgrade it cannot keep the
+   key through.
 3. **Hostname.** `global.domain` and `global.publicUrl`. Tokens are issued for
    this address; changing it later signs everyone out and breaks every
    connected cluster's operator.
@@ -71,10 +75,6 @@ edition: enterprise
 global:
   domain: corerun.example.com
   publicUrl: https://corerun.example.com
-secrets:
-  jwtSecret: <openssl rand -hex 32>
-  apiKeySecret: <openssl rand -hex 32>
-  dbEncryptionKey: <openssl rand -hex 32>
 bootstrap:
   enabled: true
   attachSelf: true
@@ -177,6 +177,8 @@ kubectl rollout status deployment -n corerun
 helm rollback corerun -n corerun          # back to the previous release
 ```
 
+- Back up first, and read the release notes: a release that changes a table
+  says so. Rolling back does not undo a schema change.
 - Keep `values.yaml` in version control and upgrade from it. `--reuse-values`
   keeps what the last release had but silently drops any `--set` from a
   failed upgrade; prefer the file.
@@ -184,32 +186,44 @@ helm rollback corerun -n corerun          # back to the previous release
   steps and no backward conversions**: a release that changes a table's
   shape says so in its notes, and that change is done once, by hand, with a
   backup taken first.
-- The generated keys (bootstrap token, operator token, mint key, git secret)
-  are kept across upgrades. The three `secrets.*` values are only kept if
-  they are in `values.yaml`.
+- The generated keys (encryption key, database password, bootstrap and
+  operator tokens, mint key, git secret) are kept across upgrades, read back
+  from the release's Secret.
 - The route table, gatekeeper policy and scopes are ConfigMaps
   (`corerun-gatekeeper-config`, `corerun-auth-config`) the chart renders. A
   hand-edit is overwritten by the next upgrade.
 
 ## Backups
 
-The chart backs up **only the git repositories** (`gitServer.backup.enabled`,
-nightly to a bucket, seven kept). Everything else is yours to arrange, and an
-install without it cannot be recovered:
-
-| What | How |
-|---|---|
-| PostgreSQL: organisations, people, workloads, signing keys, authorization, the licence | `pg_dump` both databases nightly (`corerun`, and `corerun_genai` if GenAI is on), or a volume snapshot of `data-corerun-postgresql-0` |
-| `corerun-secrets` and the `secrets.*` values | Outside the cluster, with the database backups. **A database backup is useless without `dbEncryptionKey`.** |
-| Object storage (ObjectIO or the site's S3) | The storage system's own replication or snapshots |
-| `values.yaml`, the licence file | Version control |
-
-```bash
-kubectl exec -n corerun corerun-postgresql-0 -- pg_dump -U corerun -Fc corerun > corerun-$(date +%F).dump
+```yaml
+postgresql:
+  backup:
+    enabled: true
+    endpoint: https://s3.example.com
+    bucket: corerun-backups
+    existingSecret: corerun-backup-credentials   # accessKey, secretKey
+gitServer:
+  backup:
+    enabled: true
+    endpoint: https://s3.example.com
+    bucket: corerun-backups
 ```
 
-Restore into an empty database before the API starts, with the same
-`dbEncryptionKey`. Test a restore before you need one.
+Nightly dumps of every database (and the GenAI one), and an archive of the git
+repositories, the newest seven of each kept. Object storage is backed up by
+the storage system itself (snapshots, replication). **None of it restores
+without the encryption key** -- keep it with the dumps, outside the cluster.
+
+Run one now, and check it worked:
+
+```bash
+kubectl create job -n corerun --from=cronjob/corerun-postgres-backup backup-now
+kubectl logs -n corerun job/backup-now -f
+```
+
+Restoring: install with the same key, services scaled to zero, `pg_restore`
+each dump, scale up. The install's docs have it step by step (Guides → Backup
+and restore). Test a restore before you need one.
 
 `helm uninstall` leaves the database volume; deleting the PVCs deletes
 everything.
@@ -228,10 +242,17 @@ helm upgrade corerun oci://ghcr.io/corerun-ai/charts/corerun -n corerun -f value
 Dashboards land in a **corerun** folder: platform (start here), capacity,
 gatekeeper, hub, credentials, registry, object storage, trace a request.
 
-**The chart ships no alert rules.** Alert at least on: pods not ready,
-`corerun_hub_agents_connected` falling, gatekeeper `check_failures`, the auth
-signing key's age, `corerun_auth_break_glass_total` above zero, and the
-database volume filling.
+The chart ships its alert rules as a PrometheusRule: pods down or restarting,
+gateway errors, authorization failing, a cluster disconnected, the
+break-glass used, a refresh token reused, background tasks stalled, the
+database volume filling, and a backup that has not succeeded in 36 hours.
+Where they are sent is Alertmanager's receiver:
+
+```bash
+ALERT_WEBHOOK_URL=https://… ALERT_EMAIL_TO=oncall@example.com \
+  ALERT_SMTP_HOST=smtp.example.com:587 ALERT_SMTP_FROM=alerts@example.com \
+  deploy/monitoring/install.sh
+```
 
 Every response carries `X-Request-Id`. Paste it into the "trace a request"
 dashboard, or grep every service's logs for it.
@@ -256,7 +277,7 @@ whether the install is configured.
 
 ## Do not
 
-- Do not change `dbEncryptionKey` on a running install, and never lose it.
+- Do not change the encryption key on a running install, and never lose it.
 - Do not `kubectl delete pvc` in the namespace unless the install is meant to be
   gone, data and all.
 - Do not edit ConfigMaps the chart owns; change values and upgrade.

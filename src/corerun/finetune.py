@@ -11,8 +11,8 @@ Usage:
     # Create a fine-tuning job
     job = corerun.finetune.create(
         name="llama-finetuned",
-        framework="unsloth",
-        base_model="unsloth/Llama-3.2-3B-Instruct",
+        framework="hf_trainer",
+        base_model="meta-llama/Llama-3.2-3B-Instruct",
         dataset_id="<dataset-uuid>",
         compute_name="dgx-cluster",
         gpu=1,
@@ -29,8 +29,8 @@ Usage:
     # One-shot: create and wait
     job = corerun.finetune.run(
         name="llama-finetuned",
-        framework="unsloth",
-        base_model="unsloth/Llama-3.2-3B-Instruct",
+        framework="hf_trainer",
+        base_model="meta-llama/Llama-3.2-3B-Instruct",
         dataset_id="<dataset-uuid>",
         compute_name="dgx-cluster",
     )
@@ -50,7 +50,7 @@ class FineTuneJob(BaseModel):
 
     id: str
     name: str
-    framework: str          # "unsloth", "hf_trainer"
+    framework: str          # "hf_trainer"; "unsloth" where a cluster offers its image
     base_model: str
     method: str             # "lora", "qlora", "full"
     dataset_id: str
@@ -76,7 +76,7 @@ class FineTuneJob(BaseModel):
 
     @property
     def is_finished(self) -> bool:
-        return self.status in ("succeeded", "failed", "cancelled")
+        return self.status in ("succeeded", "failed", "cancelled", "stopped")
 
     def __repr__(self) -> str:
         return f"FineTuneJob(name='{self.name}', model='{self.base_model}', status='{self.status}')"
@@ -110,8 +110,9 @@ def create(
 
     Args:
         name: Job name
-        framework: Training framework — "unsloth" or "hf_trainer"
-        base_model: HuggingFace model ID (e.g. "unsloth/Llama-3.2-3B-Instruct")
+        framework: Training framework -- "hf_trainer". "unsloth" only where the
+            cluster's profile names an image for it; otherwise it is refused.
+        base_model: Hugging Face model id (e.g. "meta-llama/Llama-3.2-3B-Instruct"), or registry://name
         dataset_id: Dataset ID from workspace
         compute_name: Compute target name (cluster)
         method: Fine-tuning method — "lora", "qlora", or "full" (default: "lora")
@@ -139,8 +140,8 @@ def create(
     Example:
         job = corerun.finetune.create(
             name="llama3-finetuned",
-            framework="unsloth",
-            base_model="unsloth/Llama-3.2-3B-Instruct",
+            framework="hf_trainer",
+            base_model="meta-llama/Llama-3.2-3B-Instruct",
             dataset_id="abc123",
             compute_name="dgx-cluster",
             gpu=1,
@@ -206,7 +207,7 @@ def list(
 
     Args:
         status: Filter by status (pending, running, succeeded, failed)
-        framework: Filter by framework (unsloth, hf_trainer)
+        framework: Filter by framework (hf_trainer, unsloth)
         workspace: Workspace ID (uses default if not specified)
 
     Returns:
@@ -261,6 +262,23 @@ def delete(job_id: str, workspace: Optional[str] = None) -> None:
     """
     client = get_client()
     client.delete(f"/finetune/{job_id}", workspace=workspace)
+
+
+def stop(job_id: str, workspace: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Stop a running fine-tune. It keeps its record and what it wrote so far;
+    delete() removes it.
+    """
+    return get_client().post(f"/finetune/{job_id}/stop", workspace=workspace)
+
+
+def logs(job_id: str, tail: Optional[int] = None, workspace: Optional[str] = None) -> str:
+    """The trainer's output, or its last ``tail`` lines."""
+    params = {"tail": tail} if tail else None
+    response = get_client().get(f"/finetune/{job_id}/logs", params=params, workspace=workspace)
+    if isinstance(response, dict):
+        return response.get("logs") or ""
+    return str(response)
 
 
 def wait(
@@ -341,8 +359,8 @@ def run(
     Example:
         job = corerun.finetune.run(
             name="llama3-tuned",
-            framework="unsloth",
-            base_model="unsloth/Llama-3.2-3B-Instruct",
+            framework="hf_trainer",
+            base_model="meta-llama/Llama-3.2-3B-Instruct",
             dataset_id="abc123",
             compute_name="dgx-cluster",
             epochs=3,

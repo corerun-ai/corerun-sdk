@@ -362,6 +362,46 @@ def delete_trace(
     output.emit({"deleted": trace_id}, lambda: console.print(f"[green]Deleted[/green] {trace_id}"))
 
 
+@traces_app.command("assess")
+def assess_trace(
+    trace_id: str = typer.Argument(..., help="The trace id"),
+    name: str = typer.Argument(..., help='What is being judged, e.g. "correct" or "helpfulness"'),
+    value: str = typer.Argument(..., help="The verdict: yes/no, a number, or text"),
+    experiment: str = typer.Option(..., "--experiment", "-e", help="Which experiment it is in"),
+    rationale: Optional[str] = typer.Option(None, "--rationale", "-r", help="Why"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w"),
+):
+    """
+    Record a person's judgement on a trace, beside the judges' scores.
+
+    yes/no and true/false are recorded as booleans and numbers as numbers, so
+    they chart and aggregate with the judges' own.
+
+    Example:
+        corerun genai traces assess 7f3a correct no -e support-bot -r "cited the wrong policy"
+    """
+    if json_output:
+        output.set_json(True)
+    _init_client()
+    from corerun import genai
+
+    trace_id = _resolve(trace_id, experiment, workspace)
+    lowered = value.strip().lower()
+    verdict: object
+    if lowered in ("yes", "true", "pass"):
+        verdict = True
+    elif lowered in ("no", "false", "fail"):
+        verdict = False
+    else:
+        try:
+            verdict = float(value) if "." in value else int(value)
+        except ValueError:
+            verdict = value
+    answer = _called(lambda: genai.assess(trace_id, name, verdict, rationale=rationale, workspace=workspace))
+    output.emit(answer, lambda: console.print(f"[green]Recorded[/green] {name} = {verdict!r} on {trace_id}"))
+
+
 @sessions_app.command("list")
 def list_sessions(
     experiment: str = typer.Option(..., "--experiment", "-e", help="Which experiment's sessions"),

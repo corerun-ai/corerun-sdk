@@ -50,7 +50,7 @@ def list_jobs(
     Example:
         corerun finetune list
         corerun finetune list --status running
-        corerun finetune list --framework unsloth
+        corerun finetune list --status running
     """
     _init_client()
 
@@ -261,6 +261,70 @@ def delete_job(
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
+
+
+@app.command("stop")
+def stop_job(
+    job_id: str = typer.Argument(..., help="Fine-tuning job ID"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Stop a running fine-tune. Its record and what it wrote so far stay.
+
+    Example:
+        corerun finetune stop abc123
+    """
+    _init_client()
+    import corerun.finetune as ft
+
+    try:
+        ft.stop(job_id, workspace=workspace)
+    except Exception as e:
+        raise output.fail(str(e))
+    console.print(f"[green]Stopped[/green] {job_id}")
+
+
+@app.command("logs")
+def job_logs(
+    job_id: str = typer.Argument(..., help="Fine-tuning job ID"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Keep printing until it finishes"),
+    tail: Optional[int] = typer.Option(None, "--tail", "-n", help="Only the last N lines"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    The trainer's output: loss as it is logged, and why it stopped if it did.
+
+    Example:
+        corerun finetune logs abc123 --follow
+    """
+    import time
+
+    _init_client()
+    import corerun.finetune as ft
+
+    if not follow:
+        try:
+            console.print(ft.logs(job_id, tail=tail, workspace=workspace), end="", markup=False, highlight=False)
+        except Exception as e:
+            raise output.fail(str(e))
+        return
+    printed = ""
+    try:
+        while True:
+            try:
+                current = ft.logs(job_id, workspace=workspace)
+                if current.startswith(printed):
+                    console.print(current[len(printed):], end="", markup=False, highlight=False)
+                else:
+                    console.print(current, end="", markup=False, highlight=False)
+                printed = current
+                if ft.get(job_id, workspace=workspace).is_finished:
+                    break
+            except Exception:
+                pass
+            time.sleep(3)
+    except KeyboardInterrupt:
+        pass
 
 
 @app.command("wait")

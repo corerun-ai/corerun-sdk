@@ -12,6 +12,8 @@ corerun finetune create --name <name> \
     --compute <target> --profile <profile> --method lora \
     --eval-split 0.1 --as <result-model-name>
 corerun finetune wait <job-id>
+corerun finetune logs <job-id> --follow    # loss as it is logged
+corerun finetune stop <job-id>             # keeps the record; delete removes it
 ```
 
 Methods: `lora` (adapters on a bf16 base), `qlora` (a 4-bit base: fits a model
