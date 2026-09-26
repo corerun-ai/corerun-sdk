@@ -1,6 +1,6 @@
 # corerun skills
 
-Nine skills that teach a coding agent to drive corerun through its CLI.
+Eleven skills that teach a coding agent to drive corerun through its CLI.
 
 | Skill | What it covers |
 |---|---|
@@ -13,6 +13,8 @@ Nine skills that teach a coding agent to drive corerun through its CLI.
 | `corerun-inference` | Serving models: deploying, scaling, why one will not start |
 | `corerun-endpoints` | The address callers use, its keys, and publishing models corerun does not run |
 | `corerun-genai` | Agent traces and their span trees, sessions, judges, review queues, evaluation runs |
+| `corerun-admin` | Administering an organisation: people, groups, SSO, service accounts, the licence, workspace limits, git hosts |
+| `corerun-devops` | Installing, upgrading, backing up and monitoring an on-premises install with Helm |
 
 They ship inside the CLI they drive, so anywhere the CLI is installed has them.
 Nothing in them is about notebooks: every one is about `corerun`, and they work

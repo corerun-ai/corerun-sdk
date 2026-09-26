@@ -136,7 +136,7 @@ app.add_typer(quota_app, name="quota", help="Workspace quota")
 app.add_typer(storage_app, name="storage", help="Storage accounts")
 app.add_typer(workspace_app, name="workspace", help="Workspace selection")
 app.add_typer(groups_app, name="groups", help="Groups, and the roles they hold")
-app.add_typer(org_app, name="org", help="Your organisation: usage, security settings and model prices")
+app.add_typer(org_app, name="org", help="Your organisation: people, sign-in, service accounts, licence, limits, usage, security and prices")
 app.add_typer(prices_app, name="prices", help="Providers, and what their models cost")
 
 # Aliases for convenience

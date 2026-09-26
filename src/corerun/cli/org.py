@@ -1,5 +1,7 @@
 """
 The organisation you administer: usage, and its own security settings.
+People, sign-in, service accounts, the licence, workspace limits and shared
+git hosts are in org_admin.
 """
 
 import copy
@@ -13,11 +15,15 @@ from corerun.cli import output
 from corerun.cli.metrics_view import dollars
 
 console = output.console
-app = typer.Typer(help="Your organisation: usage and security settings")
+app = typer.Typer(help="Your organisation: people, sign-in, service accounts, licence, limits, usage and security")
 security_app = typer.Typer(help="How strict signing in to this organisation is")
 app.add_typer(security_app, name="security")
 prices_app = typer.Typer(help="The organisation's own prices for providers' models, over the list")
 app.add_typer(prices_app, name="prices")
+
+from corerun.cli import org_admin  # noqa: E402
+
+org_admin.register(app)
 
 
 def _init_client():
