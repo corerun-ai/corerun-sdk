@@ -619,6 +619,33 @@ def set_stage(
         raise typer.Exit(1)
 
 
+@app.command("from-job")
+def publish_job(
+    name: str = typer.Argument(..., help="Model to add the version to (created if missing)"),
+    job: str = typer.Option(..., "--job", "-j", help="The finished job whose outputs to register"),
+    description: Optional[str] = typer.Option(None, "--description", "-d"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Register a finished job's outputs as a new version.
+
+    The version names the run the job logged into. See where the outputs are
+    first with `corerun runs show <run-id>`.
+
+    Example:
+        corerun models from-job churn-model --job 0b1c2d3e-...
+    """
+    _init_client()
+    import corerun.registry as registry
+
+    try:
+        version = registry.publish_from_job(name, job, description=description, workspace=workspace)
+        console.print(f"[green]{name} v{version.version}[/green] from job {job}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
 @app.command("alias")
 def set_alias(
     name: str = typer.Argument(..., help="Model name"),

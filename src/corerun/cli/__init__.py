@@ -55,6 +55,7 @@ from corerun.cli.notebooks import app as notebooks_app
 from corerun.cli.quota import app as quota_app
 from corerun.cli.registry import app as registry_app
 from corerun.cli.repos import app as repos_app
+from corerun.cli.runs import app as runs_app
 from corerun.cli.skills import app as skills_app
 from corerun.cli.storage import app as storage_app
 from corerun.cli.tokens import app as tokens_app
@@ -118,6 +119,7 @@ app.add_typer(notebooks_app, name="notebooks", help="Notebook sessions")
 app.add_typer(registry_app, name="models", help="Model registry")
 app.add_typer(skills_app, name="skills", help="corerun skills for coding agents")
 app.add_typer(finetune_app, name="finetune", help="Fine-tuning jobs")
+app.add_typer(runs_app, name="runs", help="Runs: what jobs, fine-tunes and notebooks logged")
 app.add_typer(genai_app, name="genai", help="Agent traces, sessions and retention")
 app.add_typer(tokens_app, name="tokens", help="Tokens for exporters, CI and scripts")
 app.add_typer(inference_app, name="inference", help="Inference servers")

@@ -44,6 +44,12 @@ mistake available here.
 
 ## Afterwards
 
+Loss, evaluation loss and learning rate are logged to the job's run as it
+trains: `corerun runs list finetune --order-by metrics.eval_loss` compares
+fine-tunes (the experiment is `finetune` unless one was named), and
+`corerun runs metric <run-id> eval_loss` reads a curve.
+
+
 A LoRA or QLoRA fine-tune produces an adapter that
 [corerun-inference](../corerun-inference/SKILL.md) can load onto its base model;
 with `--as` it is already in the registry, which

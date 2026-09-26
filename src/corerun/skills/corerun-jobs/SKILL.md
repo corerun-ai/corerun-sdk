@@ -83,6 +83,35 @@ optional.
 dataset and GPU count with the human before submitting anything — and never
 submit a speculative job to see what happens.
 
+## What a job logged
+
+Every job logs into a run of its own, in the experiment it was submitted under
+(`--experiment`, default `default`), so code that uses the standard tracking
+client needs no configuration -- and must not call `set_experiment`, which
+points away from the run the job was given. Read the results back:
+
+```bash
+corerun runs list <experiment> --order-by -metrics.accuracy
+corerun runs show <run-id>              # parameters, metrics, tags, code, outputs
+corerun runs metric <run-id> loss       # every value, by step
+corerun runs files <run-id>
+corerun runs download <run-id> <path> -o <file>
+```
+
+`runs show` also says where the job's code came from (repository, ref, path)
+and where its outputs folder is kept (`outputs: s3://<bucket>/...`) -- the
+files that registering the run makes a model version of:
+
+```bash
+corerun runs register <run-id> <model>     # or: corerun models from-job <model> --job <job-id>
+corerun runs models <run-id>               # what it became, and where the files are
+```
+ A notebook logging with
+`mlflow.set_experiment(...)` lands in the same experiments.
+
+In the console: Experiments in the ML rail (training experiments only) → the
+experiment → Runs, Charts, Compare, Models; or the job's Metrics tab.
+
 ## Debugging a failure
 
 Read the logs before theorising: `corerun jobs logs <job-id>` returns the tail,

@@ -127,6 +127,7 @@ from corerun import (
     quota,
     registry,
     repos,
+    runs,
 )
 from corerun.client import CoreRunClient
 from corerun.config import get_client, get_config, init
@@ -148,6 +149,7 @@ __all__ = [
     "inference",
     "finetune",
     "genai",
+    "runs",
     "tokens",
     "clusters",
     "compute",

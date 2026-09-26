@@ -395,6 +395,46 @@ def create_version(
     return _version_from_response(response)
 
 
+def publish_from_job(
+    model_name: str,
+    job_id: str,
+    description: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> ModelVersion:
+    """
+    Register what a finished job wrote to its outputs folder as a new version.
+
+    The model is created if it does not exist. The version names the run the
+    job logged into, so its page links back to the metrics that justified it.
+    A job already published can be published again: another version, or a
+    version of another model.
+
+    Example:
+        version = corerun.registry.publish_from_job("churn-model", job_id="0b1c...")
+    """
+    client = get_client()
+    body: Dict[str, Any] = {"job_id": job_id}
+    if description:
+        body["description"] = description
+    response = client.post(f"/registry/models/{model_name}/publish-from-job", json=body, workspace=workspace)
+    return _version_from_response(response)
+
+
+def versions_from_runs(run_ids: List[str], workspace: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Registry versions trained in these runs (run or job ids), across every
+    model, each with `location`: the git commit or object-store path its
+    files are at.
+    """
+    client = get_client()
+    out: List[Dict[str, Any]] = []
+    ids = [i for i in dict.fromkeys(run_ids) if i]
+    for start in range(0, len(ids), 500):
+        response = client.get("/registry/versions", params={"run_id": ids[start:start + 500]}, workspace=workspace)
+        out.extend(response.get("versions", []) or [])
+    return out
+
+
 def set_version_stage(
     model_name: str,
     version: int,
