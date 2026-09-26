@@ -350,3 +350,82 @@ def test_git_connection(ref: str, repo: str) -> Dict[str, Any]:
 
 def remove_git_connection(ref: str) -> Dict[str, Any]:
     return get_client().delete(f"/tenant/shared/git-connections/{_connection_id(ref)}")
+
+
+# ── Audit ────────────────────────────────────────────────────────────────────
+#
+# What was done in the organisation and what was refused -- by the API, at
+# sign-in and at the front door -- and the SIEM destinations the same events
+# are sent to. Needs a plan with the audit log.
+
+
+def audit_events(
+    since: Optional[str] = "24h",
+    until: Optional[str] = None,
+    actor: Optional[str] = None,
+    action: Optional[str] = None,
+    outcome: Optional[str] = None,
+    limit: int = 100,
+    before: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    One page of the audit trail, newest first: ``{"events": [...], "next_before": ...}``.
+
+    ``since`` is RFC 3339 or a duration back from now (``24h``, ``7d``);
+    ``actor`` and ``action`` match part of the value; ``outcome`` is
+    ``success``, ``denied`` or ``failure``. Pass ``next_before`` back as
+    ``before`` for the page after.
+    """
+    params: Dict[str, Any] = {"limit": limit}
+    for key, value in (("since", since), ("until", until), ("actor", actor), ("action", action), ("outcome", outcome), ("before", before)):
+        if value:
+            params[key] = value
+    return get_client().get("/tenant/audit", params=params)
+
+
+def audit_exports() -> List[Dict[str, Any]]:
+    """Where the organisation's audit events are sent, besides the platform."""
+    return get_client().get("/tenant/audit/exports").get("exports", []) or []
+
+
+def _export_id(ref: str) -> str:
+    for export in audit_exports():
+        if ref in (export.get("id"), export.get("name")):
+            return export["id"]
+    raise ValueError(f"No audit destination called {ref!r}.")
+
+
+def add_audit_export(
+    name: str,
+    kind: str,
+    address: str,
+    *,
+    transport: Optional[str] = None,
+    format: Optional[str] = None,
+    header: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Add a destination: ``webhook`` (an HTTPS URL taking JSON batches) or
+    ``syslog`` (``host:port``; transport ``tcp+tls``, ``tcp`` or ``udp``;
+    format ``json`` or ``cef``). A test event is sent first, and a
+    destination that does not take it is refused.
+    """
+    body: Dict[str, Any] = {"name": name, "kind": kind, "address": address}
+    for key, value in (("transport", transport), ("format", format), ("header", header), ("token", token)):
+        if value:
+            body[key] = value
+    return get_client().post("/tenant/audit/exports", json=body)
+
+
+def test_audit_export(ref: str) -> Dict[str, Any]:
+    """Send a test event to a destination: ``{"delivered": bool, "message": str}``."""
+    return get_client().post(f"/tenant/audit/exports/{_export_id(ref)}/test", json={})
+
+
+def set_audit_export_enabled(ref: str, enabled: bool) -> Dict[str, Any]:
+    return get_client().put(f"/tenant/audit/exports/{_export_id(ref)}", json={"enabled": enabled})
+
+
+def remove_audit_export(ref: str) -> Dict[str, Any]:
+    return get_client().delete(f"/tenant/audit/exports/{_export_id(ref)}")

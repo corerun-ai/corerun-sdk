@@ -245,7 +245,8 @@ gatekeeper, hub, credentials, registry, object storage, trace a request.
 The chart ships its alert rules as a PrometheusRule: pods down or restarting,
 gateway errors, authorization failing, a cluster disconnected, the
 break-glass used, a refresh token reused, background tasks stalled, the
-database volume filling, and a backup that has not succeeded in 36 hours.
+database volume filling, a backup that has not succeeded in 36 hours, and audit
+events dropped on the way to the trail or a SIEM.
 Where they are sent is Alertmanager's receiver:
 
 ```bash
@@ -253,6 +254,20 @@ ALERT_WEBHOOK_URL=https://… ALERT_EMAIL_TO=oncall@example.com \
   ALERT_SMTP_HOST=smtp.example.com:587 ALERT_SMTP_FROM=alerts@example.com \
   deploy/monitoring/install.sh
 ```
+
+**Audit and SIEM.** Every change, sign-in and refused request is one JSON line
+on the API's stdout with `"log":"audit"` (any log shipper picks it up with no
+configuration), a row the organisation reads under Organization → Audit, and --
+when the install names one -- an event at the site's SIEM:
+
+```yaml
+audit:
+  syslog: {address: siem.example.com:6514, transport: tcp+tls, format: cef}
+  webhook: {url: https://splunk.example.com:8088/services/collector/raw, existingSecret: audit-webhook}
+  retentionDays: 365
+```
+
+Each organisation can add its own destinations too (`corerun org audit add`).
 
 Every response carries `X-Request-Id`. Paste it into the "trace a request"
 dashboard, or grep every service's logs for it.

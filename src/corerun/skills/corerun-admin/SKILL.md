@@ -194,6 +194,31 @@ corerun org security show
 A service account whose "Last used" is long ago, or never, is a candidate for
 deletion -- confirm with its owner first.
 
+To answer "who did what" -- every change, every sign-in, and every request
+refused (a token outside its scope, a workspace without the feature, a role
+that does not reach) -- read the audit trail (plans with the audit log):
+
+```bash
+corerun org audit --since 7d                       # newest first
+corerun org audit --actor ana@example.com --since 30d
+corerun org audit --outcome denied --since 24h     # what was refused, and why
+corerun org audit --action signin
+```
+
+The same events can go to the organisation's own SIEM as they happen:
+
+```bash
+corerun org audit add splunk --kind webhook \
+  --address https://splunk.example.com:8088/services/collector/raw --token-env HEC_TOKEN
+corerun org audit add qradar --kind syslog --address siem.example.com:6514 --format cef
+corerun org audit exports
+corerun org audit test splunk
+corerun org audit disable splunk        # pause; `enable` resumes, `remove` forgets it
+```
+
+A destination is sent a test event before it is added, and refused if it does
+not arrive. Pass the token through `--token-env`, never on the command line.
+
 ## Do not
 
 - Do not remove the last identity provider, or tighten network rules, without

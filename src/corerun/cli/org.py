@@ -20,6 +20,8 @@ security_app = typer.Typer(help="How strict signing in to this organisation is")
 app.add_typer(security_app, name="security")
 prices_app = typer.Typer(help="The organisation's own prices for providers' models, over the list")
 app.add_typer(prices_app, name="prices")
+audit_app = typer.Typer(help="What was done and refused in the organisation, and the SIEM it is sent to")
+app.add_typer(audit_app, name="audit")
 
 from corerun.cli import org_admin  # noqa: E402
 
@@ -380,3 +382,160 @@ def prices_clear(
         answer,
         lambda: console.print(f"[green]{provider}/{model}[/green] is at its list price again"),
     )
+
+
+# ── Audit ────────────────────────────────────────────────────────────────────
+
+
+@audit_app.callback(invoke_without_command=True)
+def audit_list(
+    ctx: typer.Context,
+    since: str = typer.Option("24h", "--since", help="RFC 3339, or back from now: 24h, 7d"),
+    until: Optional[str] = typer.Option(None, "--until"),
+    actor: Optional[str] = typer.Option(None, "--actor", help="Part of who did it"),
+    action: Optional[str] = typer.Option(None, "--action", help="Part of what was done"),
+    outcome: Optional[str] = typer.Option(None, "--outcome", help="success, denied or failure"),
+    limit: int = typer.Option(50, "--limit"),
+):
+    """The audit trail, newest first."""
+    if ctx.invoked_subcommand is not None:
+        return
+    _init_client()
+    import corerun.org as org
+
+    try:
+        page = org.audit_events(since=since, until=until, actor=actor, action=action, outcome=outcome, limit=limit)
+    except Exception as e:
+        raise output.fail(str(e))
+    events = page.get("events") or []
+
+    def render():
+        if not events:
+            console.print("[dim]Nothing recorded in this period.[/dim]")
+            return
+        t = Table()
+        for col in ("When", "Who", "What", "Outcome", "From"):
+            t.add_column(col)
+        for ev in events:
+            what = ev.get("action", "")
+            if ev.get("target") and ev.get("target") != what:
+                what += f"\n[dim]{ev['target']}[/dim]"
+            outcome_text = ev.get("outcome", "")
+            if ev.get("reason"):
+                outcome_text += f" ({ev['reason']})"
+            t.add_row(ev.get("at", "")[:19].replace("T", " "), ev.get("actor_email") or ev.get("actor_id") or "-",
+                      what, outcome_text, ev.get("source_ip") or "-")
+        console.print(t)
+        if page.get("next_before"):
+            console.print("[dim]More: narrow with --since/--actor/--action, or raise --limit.[/dim]")
+
+    output.emit(page, render)
+
+
+@audit_app.command("exports")
+def audit_exports():
+    """Where the organisation's audit events are sent."""
+    _init_client()
+    import corerun.org as org
+
+    try:
+        found = org.audit_exports()
+    except Exception as e:
+        raise output.fail(str(e))
+
+    def render():
+        if not found:
+            console.print("[dim]No destinations. Add one with `corerun org audit add`.[/dim]")
+            return
+        t = Table()
+        for col in ("Name", "Kind", "Address", "Sending"):
+            t.add_column(col)
+        for x in found:
+            kind = x.get("kind", "")
+            if kind == "syslog":
+                kind += f" {x.get('transport') or 'tcp+tls'} {x.get('format') or 'json'}"
+            t.add_row(x.get("name", ""), kind, x.get("address", ""), "yes" if x.get("enabled") else "paused")
+        console.print(t)
+
+    output.emit(found, render)
+
+
+@audit_app.command("add")
+def audit_add(
+    name: str = typer.Argument(..., help="A name for the destination"),
+    kind: str = typer.Option(..., "--kind", help="webhook or syslog"),
+    address: str = typer.Option(..., "--address", help="An HTTPS URL, or host:port for syslog"),
+    transport: Optional[str] = typer.Option(None, "--transport", help="syslog: tcp+tls (default), tcp or udp"),
+    format: Optional[str] = typer.Option(None, "--format", help="syslog: json (default) or cef"),
+    header: Optional[str] = typer.Option(None, "--header", help="webhook: the header the token goes in (Authorization, as Bearer)"),
+    token_env: Optional[str] = typer.Option(None, "--token-env", help="webhook: read the token from this environment variable"),
+):
+    """Add a SIEM destination. A test event is sent first; one that does not arrive is refused."""
+    import os
+
+    token = None
+    if token_env:
+        token = os.environ.get(token_env)
+        if not token:
+            raise output.fail(f"{token_env} is not set.")
+    _init_client()
+    import corerun.org as org
+
+    try:
+        added = org.add_audit_export(name, kind, address, transport=transport, format=format, header=header, token=token)
+    except Exception as e:
+        raise output.fail(str(e))
+    output.emit(added, lambda: console.print(f"[green]Added {name}[/green]: a test event was delivered."))
+
+
+@audit_app.command("test")
+def audit_test(name: str = typer.Argument(..., help="The destination")):
+    """Send a test event to a destination, and say whether it arrived."""
+    _init_client()
+    import corerun.org as org
+
+    try:
+        answer = org.test_audit_export(name)
+    except Exception as e:
+        raise output.fail(str(e))
+    if not answer.get("delivered"):
+        raise output.fail(answer.get("message") or "Not delivered.")
+    output.emit(answer, lambda: console.print(f"[green]{answer.get('message', 'Delivered.')}[/green]"))
+
+
+@audit_app.command("enable")
+def audit_enable(name: str = typer.Argument(...)):
+    """Resume sending to a destination."""
+    _set_export(name, True)
+
+
+@audit_app.command("disable")
+def audit_disable(name: str = typer.Argument(...)):
+    """Pause sending to a destination, keeping it."""
+    _set_export(name, False)
+
+
+def _set_export(name: str, enabled: bool):
+    _init_client()
+    import corerun.org as org
+
+    try:
+        answer = org.set_audit_export_enabled(name, enabled)
+    except Exception as e:
+        raise output.fail(str(e))
+    output.emit(answer, lambda: console.print(f"{name}: {'sending' if enabled else 'paused'}"))
+
+
+@audit_app.command("remove")
+def audit_remove(name: str = typer.Argument(...), yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask")):
+    """Stop sending to a destination, and forget it."""
+    if not yes:
+        output.confirm(f"Stop sending audit events to {name}?")
+    _init_client()
+    import corerun.org as org
+
+    try:
+        answer = org.remove_audit_export(name)
+    except Exception as e:
+        raise output.fail(str(e))
+    output.emit(answer, lambda: console.print(f"Removed {name}"))
