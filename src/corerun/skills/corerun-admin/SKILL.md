@@ -60,8 +60,24 @@ corerun groups add ml-research sara@acme.com
 corerun groups show ml-research
 ```
 
-A membership written by a directory sync says so (`show`, "From"); removing it
-by hand is undone at the next sync -- change it in the directory.
+With single sign-on, let the directory decide who is in a group: link the
+identity provider's group, and everyone in it joins at their next sign-in and
+leaves when they sign in no longer in it.
+
+```bash
+corerun groups link ml-research "ML Research"        # Okta, Google: the group's name
+corerun groups link ml-research 0d6c7c1e-4b1a-...    # Entra: the group's object id
+corerun groups links ml-research
+corerun groups unlink ml-research "ML Research"      # the last link: its members leave now
+```
+
+The value is whatever the provider's token carries in `groups` (or `roles`),
+matched without regard to case; Entra sends object ids unless its app is set
+to send names. A membership the directory wrote says so (`show`, "From"):
+removing it by hand is undone at the person's next sign-in -- change it in the
+directory. People added by hand are never removed by the directory. The
+Administrators group is not linked this way: it follows the provider's admin
+group, or a directory group called `corerun-admin`.
 
 ## How people sign in
 

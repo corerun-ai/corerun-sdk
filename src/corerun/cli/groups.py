@@ -37,9 +37,14 @@ def _call(method: str, path: str, json_body=None):
     living in one.
     """
     from corerun.cli import http
+    from corerun.exceptions import CoreRunError
 
     _require_credentials()
-    return http.request(method, "/tenant" + path, json=json_body)
+    try:
+        return http.request(method, "/tenant" + path, json=json_body)
+    except CoreRunError as e:
+        # The platform's own reason, said once -- not a traceback around it.
+        raise output.fail(str(e))
 
 
 def _get(path: str):
@@ -276,3 +281,60 @@ def revoke_role(
         raise typer.Exit(1)
     _delete(f"/groups/{name}/grants/{match['workspace_id']}")
     console.print(f"[green]{name} no longer has a role in {workspace}[/green]")
+
+
+@app.command("links")
+def list_links(name: str = typer.Argument(..., help="Group name or slug")):
+    """
+    The directory groups that put people in a group at sign-in.
+    """
+    mappings = _get(f"/groups/{name}/mappings").get("mappings", [])
+
+    def render():
+        if not mappings:
+            console.print(f"[dim]No directory group is linked to {name}.[/dim]")
+            return
+        for m in mappings:
+            console.print(m.get("directory_group", ""))
+
+    output.emit(mappings, render)
+
+
+@app.command("link")
+def link_directory_group(
+    name: str = typer.Argument(..., help="Group name or slug"),
+    directory_group: str = typer.Argument(..., help="The group as your identity provider's token names it: a name, or Entra's object id"),
+):
+    """
+    Put everyone in a directory group into this group, at their next sign-in.
+
+    They are taken out again when they sign in no longer in it. Anyone added
+    by hand stays regardless. Entra sends group object ids unless it is set to
+    send names; Okta and Google send names.
+
+    Example:
+        corerun groups link speech "Speech Team"
+        corerun groups link speech 0d6c7c1e-4b1a-4f0e-9f35-1b2e3c4d5e6f
+    """
+    _post(f"/groups/{name}/mappings", {"directory_group": directory_group})
+    console.print(f"[green]{directory_group} -> {name}[/green]: applied at each person's next sign-in")
+
+
+@app.command("unlink")
+def unlink_directory_group(
+    name: str = typer.Argument(..., help="Group name or slug"),
+    directory_group: str = typer.Argument(..., help="The linked directory group"),
+):
+    """
+    Stop a directory group putting people in this group.
+
+    When it was the last link, the people it put there leave now.
+    """
+    mappings = _get(f"/groups/{name}/mappings").get("mappings", [])
+    match = next((m for m in mappings if m.get("directory_group", "").lower() == directory_group.lower()), None)
+    if not match:
+        console.print(f"[red]Error:[/red] {directory_group} is not linked to {name}")
+        raise typer.Exit(1)
+    answer = _delete(f"/groups/{name}/mappings/{match['id']}") or {}
+    withdrawn = answer.get("withdrawn") or 0
+    console.print(f"[green]Unlinked {directory_group}[/green]" + (f"; {withdrawn} people it added have left {name}" if withdrawn else ""))
