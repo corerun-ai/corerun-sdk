@@ -290,6 +290,43 @@ def release_domain(domain: str) -> Dict[str, Any]:
     return get_client().delete(f"/auth/domains/{domain}")
 
 
+def require_sso(require: bool = True, members: bool = False, confirm: bool = False) -> Dict[str, Any]:
+    """
+    Require the organisation's own sign-in for its verified domains, or stop;
+    ``members`` extends it to every member, whatever their address.
+    Answers ``{"offered", "required", "members", "not_ready"}``.
+
+    Refused while there is no verified domain or live provider of its own,
+    unless this session came through that sign-in, and -- without
+    ``confirm`` -- with ``would_lock_out`` naming who has never signed in
+    through it.
+    """
+    from corerun.exceptions import CoreRunError
+    from corerun.http import decode_response
+
+    client = get_client()
+    response = client._send(
+        "POST", "/auth/domains/require-sso", None,
+        {"require": require, "members": members, "confirm": confirm}, {},
+    )
+    if response.status_code == 409:
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if body.get("error") == "would_lock_out":
+            raise WouldLockOut(body.get("message") or "would lock people out", body.get("people") or [])
+    return decode_response(response)
+
+
+class WouldLockOut(Exception):
+    """Requiring the organisation's own sign-in would shut these people out."""
+
+    def __init__(self, message: str, people: List[str]):
+        super().__init__(message)
+        self.people = people
+
+
 # --- Service accounts --------------------------------------------------------
 
 

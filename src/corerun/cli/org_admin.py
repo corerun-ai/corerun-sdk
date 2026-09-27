@@ -200,6 +200,8 @@ def sso_list():
                 state = "off"
             elif p.get("pending_test"):
                 state = "[yellow]not live: test it[/yellow]"
+            elif p.get("failing_since"):
+                state = f"[red]failing[/red]: {p.get('failing_reason') or ''}"
             elif p.get("home_proved_at"):
                 state = "live, directory home"
             else:
@@ -222,6 +224,51 @@ def sso_list():
     output.emit(rows, render)
 
 
+@sso_app.command("require")
+def sso_require(
+    off: bool = typer.Option(False, "--off", help="Stop requiring it"),
+    members: bool = typer.Option(
+        False, "--members", help="Every member, whatever their address -- not only your verified domains"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Also confirm locking out the people it names"),
+):
+    """
+    Require your own sign-in for your verified domains: the Google, GitHub and
+    Microsoft buttons, passwords and sign-in codes refuse addresses there.
+
+    Needs a verified domain (corerun org domains), a provider of your own that
+    has passed a test sign-in, and this session to have come through it
+    (sign in with it first). People who have never signed in through it are
+    named, and locked out only when you confirm. Turning it on ends
+    command-line sessions it covers; browser sessions end when they expire.
+    When the provider breaks (an expired secret), administrators recover
+    access with an emailed code from the sign-in page.
+    """
+    if not off and not yes:
+        output.confirm("Require your own sign-in? Command-line sessions it covers end now.")
+    org = _org()
+    try:
+        answer = org.require_sso(not off, members=members, confirm=yes)
+    except org.WouldLockOut as e:
+        console.print(f"[yellow]{len(e.people)} would be locked out[/yellow] -- never signed in through your SSO:")
+        for p in e.people[:50]:
+            console.print(f"  {p}")
+        output.confirm("Lock them out?")
+        answer = org.require_sso(True, members=members, confirm=True)
+    output.emit(
+        answer,
+        lambda: console.print(
+            (
+                "[green]Your own sign-in is now required[/green] for every member."
+                if answer.get("members")
+                else "[green]Your own sign-in is now required[/green] for your verified domains."
+            )
+            if answer.get("required")
+            else "Your own sign-in is no longer required."
+        ),
+    )
+
+
 @sso_app.command("add")
 def sso_add(
     name: str = typer.Argument(..., help="What people see on the sign-in page"),
@@ -232,6 +279,7 @@ def sso_add(
     domain: Optional[str] = typer.Option(None, "--domain", help="Email domain this provider answers for"),
     admin_group: Optional[str] = typer.Option(None, "--admin-group", help="Group id whose members administer the organisation"),
     hosted_domain: Optional[str] = typer.Option(None, "--hosted-domain", help="Google Workspace: its primary domain"),
+    secret_expires: Optional[str] = typer.Option(None, "--secret-expires", help="YYYY-MM-DD, for reminders before it does"),
     default: bool = typer.Option(False, "--default", help="Make it the one offered first"),
 ):
     """
@@ -256,6 +304,7 @@ def sso_add(
         domain=domain,
         admin_group_id=admin_group,
         hosted_domain=hosted_domain,
+        secret_expires_at=secret_expires,
         is_default=default or None,
     )
 
@@ -282,6 +331,7 @@ def sso_update(
     domain: Optional[str] = typer.Option(None, "--domain"),
     admin_group: Optional[str] = typer.Option(None, "--admin-group"),
     hosted_domain: Optional[str] = typer.Option(None, "--hosted-domain", help="Google Workspace: its primary domain"),
+    secret_expires: Optional[str] = typer.Option(None, "--secret-expires", help="YYYY-MM-DD; \"\" clears it"),
     active: Optional[bool] = typer.Option(None, "--active/--inactive", help="Turn it on or off without deleting it"),
 ):
     """Change an identity provider; only what is named changes."""
@@ -295,6 +345,7 @@ def sso_update(
         domain=domain,
         admin_group_id=admin_group,
         hosted_domain=hosted_domain,
+        secret_expires_at=secret_expires,
         is_active=active,
     )
     output.emit(answer, lambda: console.print(f"[green]Updated[/green] {provider}"))

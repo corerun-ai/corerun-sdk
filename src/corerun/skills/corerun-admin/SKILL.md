@@ -136,6 +136,34 @@ corerun org domains list
 Publishing the record is the domain owner's step; hand the name and value to
 the human. A domain is verified for one organisation at a time.
 
+**Requiring the organisation's own sign-in.** Once a domain is verified and a
+provider of the organisation's own is live, the organisation can close every
+other way in for addresses there -- the Google, GitHub and Microsoft buttons,
+passwords, sign-in codes, other organisations' providers:
+
+```bash
+corerun org sso require            # people at your verified domains
+corerun org sso require --members  # strict: every member, whatever their address
+corerun org sso require --off
+```
+
+It is refused until the provider is live and this session came through it
+(sign in with it first), and it names everyone who would be locked out before
+asking to confirm -- show that list to the human; never pass `--yes` for them.
+
+**Secrets expire.** Record when, so administrators are reminded:
+`corerun org sso update "Acme Entra" --client-secret <new> --secret-expires 2027-03-31`.
+`sso list` shows a provider whose secret is being refused as `failing`. When
+nobody can sign in because of it, an administrator uses "Recover access" on the
+sign-in page: a one-time code by email, an hour's session, and every other
+administrator is told.
+
+It ends command-line sessions at those domains at once (browser sessions at
+their expiry), so confirm with the human first and make sure the provider works
+(a passing test sign-in) -- otherwise the domain's people are locked out.
+Break-glass is exempt. Hosted edition only; a single-tenant install has nobody
+else's buttons to close.
+
 **A client secret expires.** When sign-in suddenly fails for everyone, the
 secret is the first suspect:
 
