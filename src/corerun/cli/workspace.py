@@ -73,14 +73,17 @@ def resolve(workspaces, wanted: str):
     return None
 
 
-def choose(api_url: str, api_key: str, default: str = None, verify: bool = True):
+def choose(api_url: str, api_key: str, default: str = None, verify: bool = True, tenant_id: str = None):
     """List the caller's workspaces and ask which one to use.
 
     A single workspace is chosen without asking -- there is no decision to make
-    -- and named, so it is still clear where the work will go.
+    -- and named, so it is still clear where the work will go. ``tenant_id``
+    narrows the choice to one organisation's, as after switching to it.
     """
     try:
         workspaces = fetch(api_url, api_key, verify=verify)
+        if tenant_id:
+            workspaces = [w for w in workspaces if w.get("tenant_id") == tenant_id]
     except Exception as e:
         console.print(f"[yellow]Could not list workspaces:[/yellow] {e}")
         console.print("  Choose one later with: corerun ws set")

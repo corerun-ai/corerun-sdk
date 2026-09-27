@@ -19,6 +19,19 @@ corerun org show
 corerun org usage
 ```
 
+## Which organisation
+
+A person can belong to several organisations -- their own, and a partner
+company's that invited them. A session is in one at a time:
+
+```bash
+corerun org list                 # * marks the current one
+corerun org switch partner-co    # a new session there; then pick a workspace
+```
+
+Everything `corerun org ...` and `corerun ws ...` does after a switch is about
+the organisation switched to. Switch back the same way.
+
 ## People
 
 Everyone with a seat, and who administers:
@@ -38,7 +51,10 @@ corerun org members cancel-invite 3f2a91c0
 ```
 
 `add` invites somebody who has never signed in; they get the role when they
-first do, with that address. An invitation expires; `invites` shows when.
+first do, with that address. People from another company keep signing in
+through their own company's directory: the invitation gives them a seat here,
+and they reach it with `corerun org switch` or the console's organisation
+switcher. An invitation expires; `invites` shows when.
 
 `remove` takes one workspace's role away. It does not take away their seat
 or their roles elsewhere, and it does not stop what they already started --
@@ -93,8 +109,32 @@ corerun org sso default "Acme Entra"
 `--type` is `entra`, `google`, `okta`, `auth0`, `github`, `local` or `custom`.
 The provider's application must allow `https://<console address>/auth/callback`
 as a redirect URI. The issuer is checked before anything is saved.
-`--domain` is the email domain it answers for; `--admin-group` makes that
-group's members organisation administrators.
+`--domain` is the email domain it answers for (public domains such as gmail.com
+are refused); `--admin-group` makes that group's members organisation
+administrators; a Google Workspace provider also takes `--hosted-domain`.
+
+**A new provider takes no sign-ins until a test sign-in passes.** `sso list`
+shows it as "not live: test it". The test is a browser step, so hand it to the
+human: in the console, Organization → SSO → **Test sign-in**. It shows what the
+provider's token carries (address, directory, groups, roles). When the person
+testing administers the directory (Global Administrator, the admin group, or a
+`corerun-admin` group), the organisation also becomes that directory's home:
+its people land here when they sign in ("live, directory home" in `sso list`).
+Changing the issuer, client id or secret needs the test again.
+
+**`--domain` restricts; only a verified domain routes.** Somebody who types an
+address is sent to this organisation's sign-in only when its domain is
+verified here -- by that directory-administrator test for Entra and Google
+Workspace, or by DNS for anything else:
+
+```bash
+corerun org domains add acme.com        # prints the TXT record to publish
+corerun org domains verify acme.com     # once the record is live
+corerun org domains list
+```
+
+Publishing the record is the domain owner's step; hand the name and value to
+the human. A domain is verified for one organisation at a time.
 
 **A client secret expires.** When sign-in suddenly fails for everyone, the
 secret is the first suspect:
@@ -104,7 +144,12 @@ corerun org sso update "Acme Entra" --client-secret <new secret>
 ```
 
 **Never remove or deactivate the only working provider** without another way
-in -- you lock out every administrator, yourself included. The same goes for a
+in -- you lock out every administrator, yourself included. `sso remove` is
+refused (`last_way_in`) while people at its domain sign in only through it;
+`--force` overrides that, and only on the human's say-so.
+
+Nobody can remove themselves from the Administrators group, and its last member
+cannot be removed; another administrator must. The same goes for a
 network allow list in `corerun org security set` (see `corerun-workspaces`).
 
 ## Service accounts: credentials for machines

@@ -190,8 +190,14 @@ def add_sign_in_provider(name: str, provider_type: str, **fields: Any) -> Dict[s
     """
     Add an identity provider. ``fields``: issuer_url, client_id,
     client_secret, domain (the email domain it answers for), admin_group_id
-    (a group whose members administer the organisation), is_default,
-    display_order. The issuer is validated before anything is saved.
+    (a group whose members administer the organisation), hosted_domain (a
+    Google Workspace's domain), is_default, display_order. The issuer is
+    validated before anything is saved.
+
+    A provider signing in through a redirect takes no sign-ins until an
+    administrator passes a test sign-in through it in the console
+    (``pending_test`` in the answer); ``notice`` says when the organisation
+    already signs in from the same directory another way.
     """
     body = {"name": name, "provider_type": provider_type, **{k: v for k, v in fields.items() if v is not None}}
     return get_client().post("/tenant/auth-providers", json=body)
@@ -207,8 +213,81 @@ def set_default_sign_in_provider(ref: str) -> Dict[str, Any]:
     return get_client().post(f"/tenant/auth-providers/{_provider_id(ref)}/set-default")
 
 
-def remove_sign_in_provider(ref: str) -> Dict[str, Any]:
-    return get_client().delete(f"/tenant/auth-providers/{_provider_id(ref)}")
+def remove_sign_in_provider(ref: str, force: bool = False) -> Dict[str, Any]:
+    """
+    Remove a provider. Refused (``last_way_in``) when it is the only way in
+    for people with seats at its domain, unless ``force``.
+    """
+    suffix = "?force=true" if force else ""
+    return get_client().delete(f"/tenant/auth-providers/{_provider_id(ref)}{suffix}")
+
+
+# --- Which organisation ------------------------------------------------------
+#
+# A session names one organisation. Somebody who belongs to several -- their
+# own and a partner company's that invited them -- switches, which is a new
+# session for the other one, issued by the auth service.
+
+
+def organisations() -> List[Dict[str, Any]]:
+    """The organisations you belong to, most recently used first; ``current`` marks this session's."""
+    return get_client().get("/auth/organisations").get("organisations") or []
+
+
+def _organisation_id(ref: str) -> Dict[str, Any]:
+    for o in organisations():
+        if ref in (o["id"], o.get("slug"), o.get("display_name")):
+            return o
+    raise ValueError(f"you do not belong to an organisation {ref!r}")
+
+
+def switch(ref: str) -> Dict[str, Any]:
+    """
+    Move this session to another organisation you belong to, by slug, name or
+    id. The new access and refresh tokens are saved and the workspace is
+    cleared -- it was the other organisation's; choose one there next.
+    """
+    target = _organisation_id(ref)
+    client = get_client()
+    body = {"tenant_id": target["id"]}
+    if client.config.refresh_token:
+        body["refresh_token"] = client.config.refresh_token
+    answer = client.post("/auth/switch", json=body)
+    client.config.auth_token = answer["access_token"]
+    if answer.get("refresh_token"):
+        client.config.refresh_token = answer["refresh_token"]
+    client.config.workspace = None
+    client._use_key(answer["access_token"])
+    client.config.save()
+    answer.setdefault("tenant", target)
+    return answer
+
+
+# --- Verified domains --------------------------------------------------------
+#
+# Only a verified domain sends somebody who types an address at it to the
+# organisation's sign-in. Entra and Google Workspace domains are verified by a
+# test sign-in from an administrator of the directory (in the console); any
+# domain can be verified by a DNS TXT record.
+
+
+def domains() -> List[Dict[str, Any]]:
+    """The organisation's domains: verified or waiting, with each one's TXT record."""
+    return get_client().get("/auth/domains").get("domains") or []
+
+
+def claim_domain(domain: str) -> Dict[str, Any]:
+    """Claim a domain; the answer names the TXT record (record_name, record_value) to publish."""
+    return get_client().post("/auth/domains", json={"domain": domain})
+
+
+def verify_domain(domain: str) -> Dict[str, Any]:
+    """Look for the TXT record now. Raises when it is not there yet."""
+    return get_client().post(f"/auth/domains/{domain}/verify")
+
+
+def release_domain(domain: str) -> Dict[str, Any]:
+    return get_client().delete(f"/auth/domains/{domain}")
 
 
 # --- Service accounts --------------------------------------------------------

@@ -20,6 +20,7 @@ console = output.console
 
 members_app = typer.Typer(help="People: seats, workspace roles and invitations")
 sso_app = typer.Typer(help="Identity providers the organisation signs in with")
+domains_app = typer.Typer(help="Email domains that send people to the organisation's sign-in")
 accounts_app = typer.Typer(help="Service accounts: machines that act for the organisation")
 license_app = typer.Typer(help="The installation's licence")
 quota_app = typer.Typer(help="Each workspace's own limits, under the plan's")
@@ -28,8 +29,11 @@ git_app = typer.Typer(help="Git hosts every workspace's jobs may clone from")
 
 def register(app: typer.Typer) -> None:
     app.command("show")(show)
+    app.command("list")(org_list)
+    app.command("switch")(org_switch)
     app.add_typer(members_app, name="members")
     app.add_typer(sso_app, name="sso")
+    app.add_typer(domains_app, name="domains")
     app.add_typer(accounts_app, name="service-accounts")
     app.add_typer(license_app, name="license")
     app.add_typer(quota_app, name="quota")
@@ -189,18 +193,31 @@ def sso_list():
             console.print("No identity provider: people sign in only as the installation allows.")
             return
         t = Table(title="Identity providers")
-        for col in ("Name", "Type", "Domain", "Issuer", "Default", "Active"):
+        for col in ("Name", "Type", "Domain", "Directory", "Default", "State"):
             t.add_column(col)
         for p in rows:
+            if not p.get("is_active"):
+                state = "off"
+            elif p.get("pending_test"):
+                state = "[yellow]not live: test it[/yellow]"
+            elif p.get("home_proved_at"):
+                state = "live, directory home"
+            else:
+                state = "live"
             t.add_row(
                 p["name"],
                 p["provider_type"],
                 p.get("domain") or "",
-                p.get("issuer_url") or "",
+                p.get("directory_key") or p.get("issuer_url") or "",
                 "yes" if p.get("is_default") else "",
-                "yes" if p.get("is_active") else "no",
+                state,
             )
         console.print(t)
+        if any(p.get("pending_test") and p.get("is_active") for p in rows):
+            console.print(
+                "A provider that is not live takes no sign-ins until an administrator passes a test sign-in "
+                "through it: in the console, Organization → SSO → Test sign-in."
+            )
 
     output.emit(rows, render)
 
@@ -214,6 +231,7 @@ def sso_add(
     client_secret: Optional[str] = typer.Option(None, "--client-secret", help="Stored encrypted; never shown again"),
     domain: Optional[str] = typer.Option(None, "--domain", help="Email domain this provider answers for"),
     admin_group: Optional[str] = typer.Option(None, "--admin-group", help="Group id whose members administer the organisation"),
+    hosted_domain: Optional[str] = typer.Option(None, "--hosted-domain", help="Google Workspace: its primary domain"),
     default: bool = typer.Option(False, "--default", help="Make it the one offered first"),
 ):
     """
@@ -237,9 +255,22 @@ def sso_add(
         client_secret=client_secret,
         domain=domain,
         admin_group_id=admin_group,
+        hosted_domain=hosted_domain,
         is_default=default or None,
     )
-    output.emit(answer, lambda: console.print(f"[green]Added[/green] {name}"))
+
+    def render():
+        console.print(f"[green]Added[/green] {name}")
+        if answer.get("notice"):
+            console.print(answer["notice"])
+        if answer.get("pending_test"):
+            console.print(
+                "It takes no sign-ins until a test sign-in through it passes: in the console, "
+                "Organization → SSO → Test sign-in. A test by an administrator of the directory "
+                "also makes this organisation the directory's home."
+            )
+
+    output.emit(answer, render)
 
 
 @sso_app.command("update")
@@ -250,6 +281,7 @@ def sso_update(
     client_secret: Optional[str] = typer.Option(None, "--client-secret", help="Replace the secret, e.g. after it expired"),
     domain: Optional[str] = typer.Option(None, "--domain"),
     admin_group: Optional[str] = typer.Option(None, "--admin-group"),
+    hosted_domain: Optional[str] = typer.Option(None, "--hosted-domain", help="Google Workspace: its primary domain"),
     active: Optional[bool] = typer.Option(None, "--active/--inactive", help="Turn it on or off without deleting it"),
 ):
     """Change an identity provider; only what is named changes."""
@@ -262,6 +294,7 @@ def sso_update(
         client_secret=client_secret,
         domain=domain,
         admin_group_id=admin_group,
+        hosted_domain=hosted_domain,
         is_active=active,
     )
     output.emit(answer, lambda: console.print(f"[green]Updated[/green] {provider}"))
@@ -279,13 +312,144 @@ def sso_default(provider: str = typer.Argument(..., help="Name or id")):
 def sso_remove(
     provider: str = typer.Argument(..., help="Name or id"),
     yes: bool = typer.Option(False, "--yes", "-y"),
+    force: bool = typer.Option(
+        False, "--force", help="Remove it even when it is the only way in for people at its domain"
+    ),
 ):
     """Remove an identity provider. Nobody can sign in through it afterwards."""
     if not yes:
         output.confirm(f"Remove {provider}? Everyone who signs in through it is locked out until another is added.")
     org = _org()
-    answer = _do(org.remove_sign_in_provider, provider)
+    answer = _do(org.remove_sign_in_provider, provider, force=force)
     output.emit(answer, lambda: console.print(f"[green]Removed[/green] {provider}"))
+
+
+# --- which organisation ------------------------------------------------------
+
+
+def org_list():
+    """The organisations you belong to; the current one is marked."""
+    org = _org()
+    rows = org.organisations()
+
+    def render():
+        if not rows:
+            console.print("You belong to no organisation yet.")
+            return
+        t = Table(title="Organisations")
+        for col in ("", "Organisation", "Slug", "Role"):
+            t.add_column(col)
+        for o in rows:
+            t.add_row(
+                "*" if o.get("current") else "",
+                o.get("display_name") or "",
+                o.get("slug") or "",
+                "admin" if o.get("is_admin") else "member",
+            )
+        console.print(t)
+        if len(rows) > 1:
+            console.print("Switch with: corerun org switch <slug>")
+
+    output.emit(rows, render)
+
+
+def org_switch(organisation: str = typer.Argument(..., help="Slug, name or id")):
+    """
+    Work in another organisation you belong to. Saves a new session for it and
+    asks which of its workspaces to use.
+    """
+    org = _org()
+    answer = _do(org.switch, organisation)
+    tenant = answer.get("tenant") or {}
+
+    def render():
+        console.print(f"[green]Now in {tenant.get('display_name') or tenant.get('slug')}[/green]")
+        from corerun.cli import workspace as workspace_cli
+        from corerun.config import get_client
+
+        client = get_client()
+        chosen = workspace_cli.choose(
+            client.config.api_url,
+            client.config.auth_token,
+            verify=client.config.verify_ssl,
+            tenant_id=tenant.get("id"),
+        )
+        if chosen:
+            client.config.workspace = chosen
+            client.config.save()
+
+    output.emit({k: v for k, v in answer.items() if k not in ("access_token", "refresh_token")}, render)
+
+
+# --- domains -----------------------------------------------------------------
+
+
+def _print_record(d):
+    console.print(f"Add this TXT record at your DNS provider, then run 'corerun org domains verify {d['domain']}':")
+    console.print(f"  name:  {d['record_name']}")
+    console.print(f"  value: {d['record_value']}")
+
+
+@domains_app.command("list")
+def domains_list():
+    """The organisation's domains, and how each was verified."""
+    org = _org()
+    rows = org.domains()
+
+    def render():
+        if not rows:
+            console.print("No domains. Addresses at a domain reach your sign-in only once it is verified.")
+            return
+        t = Table(title="Domains")
+        for col in ("Domain", "State", "By"):
+            t.add_column(col)
+        for d in rows:
+            if d.get("verified"):
+                how = {"dns": "DNS", "directory:entra": "Entra directory", "directory:google": "Google Workspace"}
+                state = f"verified ({how.get(d.get('method'), d.get('method'))})"
+            else:
+                state = "[yellow]not verified[/yellow]"
+            t.add_row(d["domain"], state, d.get("verified_by") or "")
+        console.print(t)
+
+    output.emit(rows, render)
+
+
+@domains_app.command("add")
+def domains_add(domain: str = typer.Argument(..., help="e.g. acme.com")):
+    """
+    Claim a domain and print the TXT record that verifies it.
+
+    Entra and Google Workspace domains are also verified by a test sign-in from
+    an administrator of the directory, in the console (Organization → SSO).
+    """
+    org = _org()
+    answer = org.claim_domain(domain)
+    output.emit(answer, lambda: _print_record(answer))
+
+
+@domains_app.command("verify")
+def domains_verify(domain: str = typer.Argument(...)):
+    """Look for the domain's TXT record now."""
+    org = _org()
+    answer = org.verify_domain(domain)
+
+    def render():
+        console.print(f"[green]{domain} is verified[/green]: addresses there are sent to this organisation's sign-in.")
+        if answer.get("moved_from"):
+            console.print(f"It was {answer['moved_from']}'s until now.")
+
+    output.emit(answer, render)
+
+
+@domains_app.command("remove")
+def domains_remove(domain: str = typer.Argument(...), yes: bool = typer.Option(False, "--yes", "-y")):
+    """Give a domain up. Addresses there are no longer sent to this organisation's sign-in."""
+    if not yes:
+        output.confirm(f"Remove {domain}?")
+    org = _org()
+    answer = org.release_domain(domain)
+    output.emit(answer, lambda: console.print(f"[green]Removed[/green] {domain}"))
 
 
 # --- service accounts --------------------------------------------------------
