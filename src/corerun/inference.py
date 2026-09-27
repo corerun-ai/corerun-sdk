@@ -36,7 +36,7 @@ Usage:
 
 import time
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -59,7 +59,7 @@ class InferenceServer(BaseModel):
     id: str
     name: str
     server_type: str  # vllm, ollama
-    model_source: str  # huggingface, mlflow, registry, path
+    model_source: str  # huggingface, registry, path
     model_id: str
     model_version: Optional[str] = None
     compute_name: str
@@ -146,7 +146,7 @@ class CreateInferenceServerRequest(BaseModel):
     """Request to create an inference server."""
     name: str
     server_type: str = "vllm"  # vllm, ollama
-    model_source: str = "huggingface"  # huggingface, mlflow, registry, path
+    model_source: str = "huggingface"  # huggingface, registry, path
     model_id: str
     model_version: Optional[str] = None
     compute_name: str
@@ -327,10 +327,10 @@ def deploy(
 
     Args:
         name: Server name
-        model_id: Model identifier (HuggingFace ID, MLflow URI, or registry name)
+        model_id: Model identifier (HuggingFace ID, registry name, or a path)
         compute_name: Compute target name (cluster)
         server_type: Server type ("vllm" or "ollama")
-        model_source: Model source ("huggingface", "mlflow", "registry", "path").
+        model_source: Model source ("huggingface", "registry", "path").
             "path" serves weights already on the machine — model_id is then the
             directory, and nothing is downloaded.
         served_names: What callers ask for, when that differs from model_id.
@@ -374,11 +374,12 @@ def deploy(
             wait=True,
         )
 
-        # Deploy from MLflow registry
+        # Deploy a fine-tune from the workspace registry
         server = corerun.inference.deploy(
             name="my-finetuned-model",
-            model_id="my-model@champion",  # MLflow alias
-            model_source="mlflow",
+            model_id="my-model",
+            model_version="3",
+            model_source="registry",
             compute_name="dgx-cluster",
             gpu=1,
         )
@@ -550,6 +551,33 @@ def restart(server_id: str, workspace: Optional[str] = None) -> dict:
     """
     client = get_client()
     return client.post(f"/inference-servers/{server_id}/restart", workspace=workspace)
+
+
+def regenerate_key(server_id: str, workspace: Optional[str] = None) -> str:
+    """
+    Replace an inference server's API key, and return the new one.
+
+    The old key stops being accepted at once. A running server is redeployed
+    with the new key -- a short interruption while it loads again -- and a
+    stopped one takes it when it next starts. Every caller using the old key
+    has to switch to the new one.
+
+    Clients that call through a model endpoint hold the endpoint's key, not
+    this one, and are unaffected.
+
+    Args:
+        server_id: Server ID
+        workspace: Workspace ID (uses default if not specified)
+
+    Returns:
+        The new key. It is shown once; the API does not return it again.
+
+    Example:
+        key = corerun.inference.regenerate_key("abc123")
+    """
+    client = get_client()
+    response = client.post(f"/inference-servers/{server_id}/regenerate-key", workspace=workspace)
+    return (response or {}).get("api_key") or ""
 
 
 def update(
@@ -861,6 +889,58 @@ def catalogue_entry(reference: str, workspace: Optional[str] = None) -> Optional
         if model.slug.lower() == wanted or (model.external_id or "").lower() == wanted:
             return model
     return None
+
+
+def check_compatibility(
+    model_id: str,
+    engine: Optional[str] = None,
+    image: Optional[str] = None,
+    architecture: Optional[str] = None,
+    quantization: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Whether an engine image can serve a model, before a deployment finds out.
+
+    The answer comes from the same code that refuses a create, so the two
+    cannot disagree. It checks the model against one image: the one named, or
+    the engine's default. With neither, the engine is the one the catalogue
+    says serves the model, and vllm when the catalogue does not know it.
+
+    Args:
+        model_id: The model's id (a Hugging Face id, or a catalogue slug)
+        engine: Engine whose default image to check against (vllm, triton, ...)
+        image: A specific image, instead of the engine's default
+        architecture: The model's architecture, when the catalogue lacks it
+        quantization: The weights' quantization, when the catalogue lacks it
+        workspace: Workspace ID (uses default if not specified)
+
+    Returns:
+        Dict with ``compatible`` and ``reason``, and what was checked:
+        ``image``, ``engine``, ``engine_version``, ``engine_known``, and when
+        the catalogue records them ``cuda_version`` and ``compatibility_url``
+
+    Example:
+        verdict = corerun.inference.check_compatibility("Qwen/Qwen3-8B")
+        if not verdict["compatible"]:
+            print(verdict["reason"])
+    """
+    if not engine and not image:
+        entry = catalogue_entry(model_id, workspace=workspace)
+        engine = (entry.requires_engine if entry else None) or "vllm"
+
+    body: Dict[str, Any] = {"model_id": model_id}
+    if engine:
+        body["server_type"] = engine
+    if image:
+        body["image"] = image
+    if architecture:
+        body["architecture"] = architecture
+    if quantization:
+        body["quantization"] = quantization
+
+    client = get_client()
+    return client.post("/inference-servers/catalog/check", json=body, workspace=workspace) or {}
 
 
 def delete(server_id: str, workspace: Optional[str] = None) -> None:

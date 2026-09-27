@@ -165,9 +165,35 @@ def list_tokens(workspace: Optional[str] = typer.Option(None, "--workspace", "-w
     console.print(table)
 
 
+def _resolve_key(api, reference: str, workspace: Optional[str]) -> str:
+    """The full id for what `tokens list` printed.
+
+    The list shows the first twelve characters of an id and the platform
+    revokes by the whole of it, so the id on screen was refused as unknown.
+    A prefix or a name that picks out one token is taken as that token; an
+    ambiguous one is refused with the candidates rather than guessed at.
+    """
+    try:
+        rows = api.tokens(workspace=workspace)
+    except Exception:
+        # A convenience: let the revoke itself report what is wrong.
+        return reference
+    if any(r.key_id == reference for r in rows):
+        return reference
+    found = [r for r in rows if r.key_id.startswith(reference) or r.name == reference]
+    if len(found) > 1:
+        raise output.fail(
+            f"more than one token matches '{reference}': "
+            + ", ".join(f"{r.name} ({r.key_id})" for r in found)
+        )
+    return found[0].key_id if found else reference
+
+
 @app.command("revoke")
 def revoke_token(
-    key_id: str = typer.Argument(..., help="The id from `tokens list`"),
+    key_id: str = typer.Argument(
+        ..., help="The id from `tokens list` (as shown), or the token's name"
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w"),
 ):
@@ -179,6 +205,8 @@ def revoke_token(
     """
     _init_client()
     from corerun import tokens as api
+
+    key_id = _resolve_key(api, key_id, workspace)
 
     if not yes:
         output.confirm(f"Revoke {key_id}? Anything using it stops working.")

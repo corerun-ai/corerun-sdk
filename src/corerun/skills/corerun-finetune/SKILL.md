@@ -1,6 +1,6 @@
 ---
 name: corerun-finetune
-description: Run LoRA, QLoRA and full fine-tuning jobs on corerun — pick a base model and dataset, register the result in the model registry, track it to completion. Use when asked to fine-tune, adapt, or specialise a model on a dataset.
+description: Run LoRA, QLoRA and full fine-tuning jobs on corerun — size one against the compute before it runs, pick a base model and dataset, register the result in the model registry, track it to completion. Use when asked to fine-tune, adapt, or specialise a model on a dataset.
 ---
 
 # corerun fine-tuning
@@ -25,6 +25,21 @@ evaluation. `--priority low|normal|high` and `--max-runtime <minutes>` are
 optional.
 
 ## Before creating
+
+Size it first. `plan` creates nothing: it says how big the model is, how much
+memory each method needs per GPU, which of the compute's profiles each method
+fits on, and which method and profile to start with.
+
+```bash
+corerun finetune plan <hf-id or registry://name> --compute <target>
+corerun finetune plan <model> --compute <target> --batch-size 8 --max-seq-length 4096
+```
+
+Take its recommendation unless the human has a reason not to — a method that
+does not fit is out-of-memory an hour in, not a slow run. The figures are
+estimates; a `-` for every method on every profile means nothing there holds
+it, and QLoRA or a bigger profile is the conversation to have. A gated model
+with no token on file is flagged here too.
 
 Three things fail a fine-tune before it starts, so check them:
 

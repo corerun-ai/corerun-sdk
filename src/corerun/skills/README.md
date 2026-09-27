@@ -1,25 +1,27 @@
 # corerun skills
 
-Eleven skills that teach a coding agent to drive corerun through its CLI.
+Thirteen skills that teach a coding agent to drive corerun through its CLI.
 
 | Skill | What it covers |
 |---|---|
 | `corerun-workspaces` | Creating workspaces, storage accounts, clusters and hosts |
 | `corerun-quota` | What the workspace has room for, before allocating anything |
-| `corerun-datasets` | Finding, importing and inspecting datasets |
-| `corerun-jobs` | Submitting, monitoring and debugging training jobs, and reading back the runs they logged |
-| `corerun-finetune` | LoRA, QLoRA and full fine-tuning; following, stopping and registering the result |
+| `corerun-datasets` | Finding, importing, uploading and inspecting datasets, and recording what they are |
+| `corerun-notebooks` | Starting, sharing, stopping and deleting notebooks |
+| `corerun-jobs` | Submitting, monitoring and debugging training jobs, the code repositories they run from, and reading back the runs they logged |
+| `corerun-finetune` | Sizing, then running LoRA, QLoRA and full fine-tuning; following, stopping and registering the result |
 | `corerun-models` | The model registry — versions, stages, aliases |
-| `corerun-inference` | Serving models: deploying, scaling, why one will not start |
+| `corerun-inference` | The catalogue, and serving models: deploying, changing, a server's key, why one will not start |
 | `corerun-endpoints` | The address callers use, its keys, and publishing models corerun does not run |
-| `corerun-genai` | Agent traces and their span trees, sessions, judges, review queues, evaluation runs |
+| `corerun-genai` | Agent traces and their span trees, sessions, judges, review queues, issue detection, evaluation runs |
+| `corerun-tokens` | Scoped tokens for exporters, CI and scripts, and revoking them |
 | `corerun-admin` | Administering an organisation: people, groups, SSO, service accounts, the licence, workspace limits, git hosts |
 | `corerun-devops` | Installing, upgrading, backing up and monitoring an on-premises install with Helm |
 
 They ship inside the CLI they drive, so anywhere the CLI is installed has them.
-Nothing in them is about notebooks: every one is about `corerun`, and they work
+None of them needs a notebook: every one is about `corerun`, and they work
 on a laptop, in CI, in Claude Code, or in an agent that has never seen a
-notebook. They used to live in the notebook image, which meant the only way to
+notebook (`corerun-notebooks` is about starting one, not running inside one). They used to live in the notebook image, which meant the only way to
 get them was to be inside one.
 
 ## Using them

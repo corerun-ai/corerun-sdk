@@ -144,8 +144,15 @@ class DatasetMetadata(BaseModel):
     format: Optional[str] = None
     data_type: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
+    license: Optional[str] = None
+    access_level: Optional[str] = None  # private, team, public
     stats: Optional[DatasetStats] = None
     data_schema: Optional[Dict[str, Any]] = Field(None, alias="schema")
+    usage: Optional[Dict[str, Any]] = None
+    lineage: Optional[Dict[str, Any]] = None
+    # Free-form key/value pairs a person recorded; the service replaces the
+    # whole map on every write, so update_metadata merges before it sends.
+    custom: Optional[Dict[str, Any]] = None
 
 
 # =============================================================================
@@ -186,7 +193,13 @@ class Job(BaseModel):
     @property
     def is_finished(self) -> bool:
         """Check if job has finished"""
-        return self.status in (JobStatus.SUCCEEDED, JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+        # "stopped" is set by the API's Stop and by nothing else -- it never
+        # stores an operator's passing "stopped" -- so a stopped job is over,
+        # and leaving it out made `wait` poll one for ever.
+        return self.status in (
+            JobStatus.SUCCEEDED, JobStatus.COMPLETED, JobStatus.FAILED,
+            JobStatus.CANCELLED, JobStatus.STOPPED,
+        )
 
     def __repr__(self) -> str:
         return f"Job(name='{self.name}', status='{self.status}', gpu={self.gpu})"

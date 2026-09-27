@@ -1,6 +1,6 @@
 ---
 name: corerun-genai
-description: Read and judge what an agent did on corerun — traces and their span trees, the conversations they group into, the judges that score them, review queues for human verdicts, and evaluation runs. Use when asked why an agent answered as it did, what it costs or how slow it is, or whether its output is any good.
+description: Read and judge what an agent did on corerun — traces and their span trees, the conversations they group into, the judges that score them, review queues for human verdicts, issue detection over a sample of traces, and evaluation runs. Use when asked why an agent answered as it did, what it costs or how slow it is, whether its output is any good, or what is going wrong across many traces.
 ---
 
 # corerun genai
@@ -86,6 +86,32 @@ service. Do not look for one or improvise it with `corerun jobs`.
 One row per scoring pass, with a column per score it produced. The columns are
 whatever the runs carry rather than a fixed set, so a blank means that run did
 not measure that thing — not that it scored zero.
+
+## Finding issues across many traces
+
+Issue detection reads a sample of an experiment's traces with a model and files
+what it finds as assessments on those traces, so the findings sit beside every
+other score rather than in a report of their own.
+
+```bash
+corerun genai issues categories                  # the six: correctness, latency, execution, ...
+corerun genai issues detect <experiment> --endpoint <endpoint> -c correctness,safety -n 10
+corerun genai issues detect <experiment> --endpoint <endpoint> -t <trace-id> -t <trace-id> --wait
+corerun genai issues show <job-id>               # how it is getting on, and what it found
+```
+
+`--endpoint` is the model endpoint that does the judging. Without `-c` every
+category is read; `-t` names traces and overrides the `-n` sample (25 by
+default). `--wait` stays until it finishes and exits non-zero if it failed;
+without it, `detect` prints the job id to pass to `show`.
+
+**It costs model calls: one per trace per category.** `detect` prints the
+count before it starts — 25 traces across six categories is 150 calls on that
+endpoint. Start with a small `-n` and one or two categories, and confirm with
+the human before a large run or one on an endpoint other people depend on.
+
+The findings are a model's opinion. Read the traces they point at before
+repeating a finding to anyone as fact.
 
 ## From Python
 

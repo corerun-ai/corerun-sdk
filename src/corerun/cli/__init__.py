@@ -120,7 +120,9 @@ app.add_typer(registry_app, name="models", help="Model registry")
 app.add_typer(skills_app, name="skills", help="corerun skills for coding agents")
 app.add_typer(finetune_app, name="finetune", help="Fine-tuning jobs")
 app.add_typer(runs_app, name="runs", help="Runs: what jobs, fine-tunes and notebooks logged")
-app.add_typer(genai_app, name="genai", help="Agent traces, sessions and retention")
+app.add_typer(
+    genai_app, name="genai", help="Agent traces, sessions, judges, review queues and issues"
+)
 app.add_typer(tokens_app, name="tokens", help="Tokens for exporters, CI and scripts")
 app.add_typer(inference_app, name="inference", help="Inference servers")
 app.add_typer(endpoints_app, name="endpoints", help="Model endpoints")

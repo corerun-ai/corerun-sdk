@@ -38,7 +38,7 @@ Usage:
 
 import time
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from pydantic import BaseModel
 
@@ -272,13 +272,109 @@ def stop(job_id: str, workspace: Optional[str] = None) -> Dict[str, Any]:
     return get_client().post(f"/finetune/{job_id}/stop", workspace=workspace)
 
 
-def logs(job_id: str, tail: Optional[int] = None, workspace: Optional[str] = None) -> str:
-    """The trainer's output, or its last ``tail`` lines."""
+def follow_logs(
+    job_id: str,
+    poll_interval: float = 3.0,
+    retries: int = 3,
+    workspace: Optional[str] = None,
+) -> Iterator[str]:
+    """
+    Yield the trainer's output as it is written, until the fine-tune ends.
+
+    The same polling as corerun.jobs.follow_logs -- a fine-tune's logs are
+    served by the jobs handler, status and all. A failure that may pass is
+    retried up to `retries` times in a row, then raised; any other is raised
+    at once.
+
+    Example:
+        for chunk in corerun.finetune.follow_logs("abc123"):
+            print(chunk, end="")
+    """
+    from corerun.jobs import poll_log
+
+    return poll_log(
+        f"/finetune/{job_id}/logs",
+        lambda: get(job_id, workspace=workspace).status,
+        poll_interval=poll_interval,
+        retries=retries,
+        workspace=workspace,
+    )
+
+
+def logs(
+    job_id: str,
+    tail: Optional[int] = None,
+    workspace: Optional[str] = None,
+    follow: bool = False,
+    on_output: Optional[Callable[[str], None]] = None,
+) -> str:
+    """The trainer's output, or its last ``tail`` lines.
+
+    With ``follow``, keep reading until the fine-tune ends, passing each new
+    piece to ``on_output`` (standard output by default), and return all of
+    it. ``tail`` is ignored when following.
+    """
+    if follow:
+        if on_output is None:
+            import sys
+
+            def on_output(chunk: str) -> None:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+
+        pieces = []
+        for chunk in follow_logs(job_id, workspace=workspace):
+            pieces.append(chunk)
+            on_output(chunk)
+        return "".join(pieces)
+
     params = {"tail": tail} if tail else None
     response = get_client().get(f"/finetune/{job_id}/logs", params=params, workspace=workspace)
     if isinstance(response, dict):
         return response.get("logs") or ""
     return str(response)
+
+
+def plan(
+    base_model: str,
+    compute_name: Optional[str] = None,
+    batch_size: Optional[int] = None,
+    max_seq_length: Optional[int] = None,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    What a fine-tune of a model would need, and where it fits.
+
+    Nothing is created: this is the sizing the console's fine-tune form shows
+    before anything runs. Every figure is an estimate, there to stop a job
+    that cannot fit rather than to size one to the megabyte.
+
+    Args:
+        base_model: A Hugging Face id, or registry://name for a registered model
+        compute_name: A cluster to plan against; without one there are no
+            profiles to fit, only the memory each method needs
+        batch_size: Per-GPU batch size (the API assumes 4)
+        max_seq_length: Sequence length (the API assumes 2048)
+        workspace: Workspace ID (uses default if not specified)
+
+    Returns:
+        Dict with ``model`` (parameters, weight size, dtype, gated, whether a
+        Hugging Face token is on file), ``needs_gb`` (GB per GPU for lora,
+        qlora and full), ``cluster``, ``profiles``, ``fits`` (profile ->
+        method -> bool) and ``recommended`` (method, profile or gpus, reason)
+
+    Example:
+        p = corerun.finetune.plan("Qwen/Qwen3-8B", compute_name="dgx")
+        print(p["recommended"]["method"], p["recommended"]["reason"])
+    """
+    params: Dict[str, Any] = {"base_model": base_model}
+    if compute_name:
+        params["compute_name"] = compute_name
+    if batch_size:
+        params["batch_size"] = batch_size
+    if max_seq_length:
+        params["max_seq_length"] = max_seq_length
+    return get_client().get("/finetune/plan", params=params, workspace=workspace) or {}
 
 
 def wait(

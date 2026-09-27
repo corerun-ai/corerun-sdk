@@ -42,7 +42,7 @@ Usage:
 
 import time
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable, Union
+from typing import Optional, List, Dict, Any, Callable, Iterator, Union
 
 from corerun.config import get_client
 from corerun.models import Job, JobStatus, JobLogs, CreateJobRequest
@@ -343,23 +343,150 @@ def delete(job_id: str, workspace: Optional[str] = None) -> None:
     client.delete(f"/jobs/{job_id}", workspace=workspace)
 
 
+# The states a job does not leave. The API stores "succeeded" or "failed" once
+# the operator says the container exited ("completed" and "error" are older
+# spellings still found in stored documents), "stopped" when somebody stopped
+# it, and a fine-tune's job ends "published" once its result is registered.
+# "cancelled" is kept because the SDK has always offered it as a filter.
+TERMINAL_STATUSES = frozenset(
+    {"succeeded", "completed", "failed", "error", "stopped", "cancelled", "published"}
+)
+
+
+def _is_transient(error: BaseException) -> bool:
+    """Whether a failed poll is worth repeating.
+
+    The platform restarting, a gateway timing out, a rate limit: another try
+    in a moment may well work. A missing job or a refused credential will
+    answer the same way every time, so retrying those only hides them.
+    """
+    import httpx
+
+    from corerun.exceptions import (
+        RateLimitError,
+        ServerError,
+        UnreachableError,
+    )
+    from corerun.exceptions import (
+        TimeoutError as CoreRunTimeout,
+    )
+
+    return isinstance(
+        error,
+        (ServerError, RateLimitError, CoreRunTimeout, UnreachableError, httpx.TransportError),
+    )
+
+
+def follow_logs(
+    job_id: str,
+    poll_interval: float = 2.0,
+    retries: int = 3,
+    workspace: Optional[str] = None,
+) -> Iterator[str]:
+    """
+    Yield a job's log output as it is written, until the job ends.
+
+    The API serves the whole log on every read, so this reads it every
+    `poll_interval` seconds and yields what was not seen before. The same
+    answer carries the job's status; once that is terminal the log in it is
+    the last there will be, and the generator returns.
+
+    A failure that may pass (the platform unavailable, a timeout) is retried
+    up to `retries` times in a row before it is raised; any other failure is
+    raised at once. Stopping early is the caller's to do -- break out of the
+    loop, or let KeyboardInterrupt through.
+
+    Args:
+        job_id: Job ID
+        poll_interval: Seconds between reads
+        retries: Consecutive transient failures tolerated before giving up
+        workspace: Workspace ID (uses default if not specified)
+
+    Yields:
+        Each new piece of the log, in order
+
+    Example:
+        for chunk in corerun.jobs.follow_logs("abc123"):
+            print(chunk, end="")
+    """
+    return poll_log(
+        f"/jobs/{job_id}/logs",
+        lambda: get(job_id, workspace=workspace).status,
+        poll_interval=poll_interval,
+        retries=retries,
+        workspace=workspace,
+    )
+
+
+def poll_log(
+    path: str,
+    status_of: Callable[[], Any],
+    poll_interval: float = 2.0,
+    retries: int = 3,
+    workspace: Optional[str] = None,
+) -> Iterator[str]:
+    """The polling behind follow_logs, for any route shaped like a job's logs.
+
+    `path` must answer {"logs": ..., "status": ...}, as the API's job logs
+    handler does -- it serves fine-tunes too, which is why this is separate.
+    `status_of` is asked only when an answer carries no status.
+    """
+    client = get_client()
+    seen = ""
+    failures = 0
+
+    while True:
+        try:
+            response = client.get(path, workspace=workspace)
+        except Exception as e:
+            if not _is_transient(e) or failures >= retries:
+                raise
+            failures += 1
+            time.sleep(poll_interval)
+            continue
+        failures = 0
+
+        current = response.get("logs") or ""
+        if current.startswith(seen):
+            fresh = current[len(seen):]
+        else:
+            # The log is not an extension of what was shown -- the container
+            # restarted, or the operator trimmed it. Show it again from the top
+            # rather than slicing at an offset that no longer means anything.
+            fresh = current
+        if fresh:
+            yield fresh
+        seen = current
+
+        status = response.get("status") or status_of()
+        if str(getattr(status, "value", status)) in TERMINAL_STATUSES:
+            return
+
+        time.sleep(poll_interval)
+
+
 def logs(
     job_id: str,
     follow: bool = False,
     tail: Optional[int] = None,
     workspace: Optional[str] = None,
+    on_output: Optional[Callable[[str], None]] = None,
 ) -> str:
     """
     Get job logs.
 
     Args:
         job_id: Job ID
-        follow: Stream logs (not yet implemented)
-        tail: Number of lines from end
+        follow: Keep reading until the job ends, passing each new piece of
+            the log to `on_output` as it arrives (see follow_logs, which this
+            uses, for the polling and the retries)
+        tail: Number of lines from end (ignored when following)
         workspace: Workspace ID (uses default if not specified)
+        on_output: Where followed output goes; standard output by default
 
     Returns:
-        Log content as string
+        Log content as string -- when following, everything that was passed
+        to `on_output`
 
     Example:
         logs = corerun.jobs.logs("abc123")
@@ -367,7 +494,24 @@ def logs(
 
         # Last 100 lines
         logs = corerun.jobs.logs("abc123", tail=100)
+
+        # Print as it is written, return when the job has ended
+        corerun.jobs.logs("abc123", follow=True)
     """
+    if follow:
+        if on_output is None:
+            import sys
+
+            def on_output(chunk: str) -> None:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
+
+        pieces = []
+        for chunk in follow_logs(job_id, workspace=workspace):
+            pieces.append(chunk)
+            on_output(chunk)
+        return "".join(pieces)
+
     client = get_client()
 
     params = {}

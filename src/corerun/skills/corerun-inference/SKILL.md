@@ -12,6 +12,26 @@ corerun inference types                      # available engines
 corerun inference wait <server-id>           # blocks until running
 ```
 
+## What there is to deploy
+
+The catalogue lists the models the platform knows something about — context
+length, which engine serves them, the memory and cards each build wants — and
+the serving images it has:
+
+```bash
+corerun catalogue list --search qwen          # --engine vllm, --limit 0 for all
+corerun catalogue show <slug-or-model-id>     # builds, memory, cards, features
+corerun catalogue engines                     # images, engine versions, CUDA
+corerun catalogue check <model-id>            # can the engine's image serve it?
+corerun catalogue check <model-id> --image <image>
+```
+
+A model need not be in the catalogue to be deployed by its Hugging Face id.
+`catalogue check` is decided by the code that refuses a deployment, and exits 1
+when the model cannot be served — read its reason (usually an engine too old for
+the architecture) before trying another image. It checks one image; it does not
+look at a cluster's cards, which is what `--dry-run` below is for.
+
 ## Deploying
 
 ```bash
@@ -53,10 +73,9 @@ arguments.
 A model's sampling defaults in its generation_config.json are applied by the
 engine on its own — there is no need to pass them again.
 
-Those three sources are what vLLM serves. `--source mlflow` fetches artifacts
-from a tracking server, which only a Triton deployment accepts; asking for it
-on a language model is refused before anything is deployed rather than failing
-later inside the container.
+Those three sources are all there is. A model a training run produced reaches
+serving through the registry: `corerun runs register` or `corerun models
+from-job`, then `--source registry`.
 
 `--endpoint <name>` puts the server behind an existing address instead of
 creating one named after the deployment. **When the human names an endpoint,
@@ -117,6 +136,21 @@ Requests, failures, tokens in and out, time to first token (p50/p90/p99),
 end-to-end latency and decode speed, read from the engine itself. How far back
 it goes depends on the organisation's plan; the caption says. Use this before
 guessing why callers say it is slow.
+
+## Its key
+
+```bash
+corerun inference regenerate-key <server-id>        # prints the new key, once
+```
+
+The old key stops working at once, and every caller using it has to switch to
+the new one. A running server is redeployed with the new key, so it stops
+answering briefly while it loads again (`corerun inference wait <server-id>`);
+a stopped one takes the key when it next starts. Callers going through a
+model endpoint use the endpoint's key (see
+[corerun-endpoints](../corerun-endpoints/SKILL.md)) and are unaffected; rotate
+that one instead when the question is a caller's key. Confirm with the human
+before regenerating, and hand the key over rather than writing it anywhere.
 
 ## Stopping
 

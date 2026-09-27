@@ -2,7 +2,6 @@
 Fine-tuning CLI commands
 """
 
-import time
 from typing import List, Optional
 
 import typer
@@ -297,8 +296,6 @@ def job_logs(
     Example:
         corerun finetune logs abc123 --follow
     """
-    import time
-
     _init_client()
     import corerun.finetune as ft
 
@@ -308,23 +305,24 @@ def job_logs(
         except Exception as e:
             raise output.fail(str(e))
         return
-    printed = ""
+
+    # Until the fine-tune ends, then stop, as `jobs logs --follow` does: a
+    # failure that may pass is retried a few times in the SDK, and one that
+    # persists ends the command non-zero with its reason.
     try:
-        while True:
-            try:
-                current = ft.logs(job_id, workspace=workspace)
-                if current.startswith(printed):
-                    console.print(current[len(printed):], end="", markup=False, highlight=False)
-                else:
-                    console.print(current, end="", markup=False, highlight=False)
-                printed = current
-                if ft.get(job_id, workspace=workspace).is_finished:
-                    break
-            except Exception:
-                pass
-            time.sleep(3)
+        for chunk in ft.follow_logs(job_id, workspace=workspace):
+            console.print(chunk, end="", markup=False, highlight=False)
     except KeyboardInterrupt:
-        pass
+        console.print("\n[dim]Stopped following logs (the fine-tune keeps running)[/dim]")
+        raise typer.Exit(130)
+    except Exception as e:
+        console.print()
+        raise output.fail(f"Could not read the fine-tune's logs: {e}")
+    try:
+        status = ft.get(job_id, workspace=workspace).status
+        console.print(f"\n[dim]Fine-tune finished with status: {status}[/dim]")
+    except Exception:
+        console.print("\n[dim]Fine-tune finished[/dim]")
 
 
 @app.command("wait")
@@ -360,3 +358,131 @@ def wait_for_job(
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
+
+
+def _params(n: int) -> str:
+    """A parameter count as people say it: 8.2B, 350M."""
+    if n >= 1e9:
+        return f"{n / 1e9:.1f}B"
+    if n >= 1e6:
+        return f"{n / 1e6:.0f}M"
+    return str(n)
+
+
+@app.command("plan")
+def plan_job(
+    base_model: str = typer.Argument(..., metavar="MODEL", help="Hugging Face id, or registry://name"),
+    compute: Optional[str] = typer.Option(None, "--compute", "-c", help="Cluster to plan against"),
+    batch_size: Optional[int] = typer.Option(
+        None, "--batch-size", "-b", help="Per-GPU batch size (default 4)"
+    ),
+    max_seq_length: Optional[int] = typer.Option(
+        None, "--max-seq-length", help="Sequence length (default 2048)"
+    ),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    What a fine-tune of a model would need, and where it fits. Creates nothing.
+
+    The memory each method needs per GPU, each of the compute's profiles and
+    which methods fit on it, and the method and profile to start with. Every
+    figure is an estimate.
+
+    Example:
+        corerun finetune plan Qwen/Qwen3-8B
+        corerun finetune plan Qwen/Qwen3-8B --compute dgx --batch-size 8
+    """
+    _init_client()
+
+    import corerun.finetune as ft
+
+    try:
+        plan = ft.plan(
+            base_model,
+            compute_name=compute,
+            batch_size=batch_size,
+            max_seq_length=max_seq_length,
+            workspace=workspace,
+        )
+    except Exception as e:
+        raise output.fail(str(e))
+
+    if json_output:
+        output.set_json(True)
+    if output.json_mode():
+        output.emit(plan)
+        return
+
+    model = plan.get("model") or {}
+    source = model.get("source", "")
+    console.print(f"[bold]{model.get('id') or base_model}[/bold]  [dim]({source})[/dim]")
+    if model.get("parameters"):
+        size = _params(model["parameters"])
+        if model.get("estimated"):
+            size += " (estimated from the weights' size)"
+        console.print(f"  Parameters: {size}")
+    if model.get("dtype"):
+        console.print(f"  Weights:    {model['dtype']}")
+    if model.get("gated"):
+        token = (
+            "a token is on file" if model.get("token_on_file")
+            else "[red]no Hugging Face token is on file[/red]"
+        )
+        console.print(f"  Gated:      yes -- {token}")
+    if model.get("note"):
+        console.print(f"  [yellow]{model['note']}[/yellow]")
+
+    needs = plan.get("needs_gb") or {}
+    if needs:
+        console.print("  Needs per GPU: " + "  ".join(
+            f"{m} {needs[m]:g} GB" for m in ("lora", "qlora", "full") if m in needs
+        ))
+
+    cluster = plan.get("cluster")
+    if cluster:
+        state = "connected" if cluster.get("connected") else "[yellow]not connected[/yellow]"
+        gpu = cluster.get("gpu_model") or "no GPU reported"
+        if cluster.get("gpu_memory_gb"):
+            gpu += f", {cluster['gpu_memory_gb']:g} GB"
+        console.print(
+            f"  Compute:    {cluster.get('name')} ({state}) -- {gpu}; "
+            f"{cluster.get('gpus_free', 0)} of {cluster.get('gpus_total', 0)} GPUs free"
+        )
+
+    profiles = plan.get("profiles") or []
+    fits = plan.get("fits") or {}
+    if profiles:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Profile", style="cyan")
+        table.add_column("GPUs", justify="right")
+        table.add_column("GPU")
+        for method in ("lora", "qlora", "full"):
+            table.add_column(method, justify="center")
+        for p in profiles:
+            name = p.get("name", "")
+            if p.get("default"):
+                name += " [dim](default)[/dim]"
+            gpu = p.get("gpu_model") or "-"
+            if p.get("gpu_memory_gb"):
+                gpu += f" {p['gpu_memory_gb']:g} GB"
+            verdicts = fits.get(p.get("name"), {})
+            table.add_row(
+                name,
+                f"{p.get('gpus', 0):g}",
+                gpu,
+                *(
+                    "[green]fits[/green]" if verdicts.get(m) else "[dim]-[/dim]"
+                    for m in ("lora", "qlora", "full")
+                ),
+            )
+        console.print(table)
+
+    rec = plan.get("recommended") or {}
+    where = ""
+    if rec.get("profile"):
+        where = f" on profile {rec['profile']}"
+    elif rec.get("gpus"):
+        where = f" on {rec['gpus']} GPU{'s' if rec['gpus'] > 1 else ''}"
+    method = rec.get("method", "lora")
+    console.print(f"  Recommended: [bold]{method}[/bold]{where} -- {rec.get('reason', '')}")

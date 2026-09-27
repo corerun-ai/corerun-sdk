@@ -292,3 +292,72 @@ def list_engines(
             "yes" if e.get("IsDefault") else "",
         )
     console.print(table)
+
+
+@app.command("check")
+def check_model(
+    model_id: str = typer.Argument(..., metavar="MODEL", help="Model id, or catalogue slug"),
+    engine: Optional[str] = typer.Option(
+        None, "--engine", "-e",
+        help="Check this engine's default image (default: the catalogue's engine, else vllm)",
+    ),
+    image: Optional[str] = typer.Option(
+        None, "--image", "-i", help="Check against this image instead",
+    ),
+    architecture: Optional[str] = typer.Option(
+        None, "--architecture", help="The model's architecture, if the catalogue lacks it",
+    ),
+    quantization: Optional[str] = typer.Option(
+        None, "--quantization", "-q", help="The weights' quantization, if the catalogue lacks it",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Whether an engine image can serve a model, before a deployment finds out.
+
+    Decided by the same code that refuses a deployment, so the two agree.
+    Exits 1 when the model cannot be served, so a script can gate on it.
+
+    Example:
+        corerun catalogue check Qwen/Qwen3-8B
+        corerun catalogue check Qwen/Qwen3-8B --image vllm/vllm-openai:v0.11.0
+    """
+    _init_client()
+
+    import corerun.inference as inference
+
+    try:
+        verdict = inference.check_compatibility(
+            model_id, engine=engine, image=image,
+            architecture=architecture, quantization=quantization,
+        )
+    except Exception as e:
+        raise output.fail(str(e))
+
+    if json_output:
+        output.set_json(True)
+
+    def render():
+        engine_name = verdict.get("engine") or "an unrecorded engine"
+        if verdict.get("engine_version"):
+            engine_name += f" {verdict['engine_version']}"
+        against = f"{verdict.get('image') or '(no image)'} [dim]({engine_name})[/dim]"
+        if verdict.get("compatible"):
+            console.print(f"[green]Compatible[/green]  {model_id} on {against}")
+            if not verdict.get("engine_known"):
+                # Nothing to check against is not the same as a pass.
+                console.print(
+                    "[dim]  The catalogue does not record this image, so little was checked.[/dim]"
+                )
+        else:
+            console.print(f"[red]Not compatible[/red]  {model_id} on {against}")
+            if verdict.get("reason"):
+                console.print(f"  {verdict['reason']}")
+        if verdict.get("cuda_version"):
+            console.print(f"  [dim]Built against CUDA {verdict['cuda_version']}[/dim]")
+        if verdict.get("compatibility_url") and not verdict.get("compatible"):
+            console.print(f"  [dim]What it serves: {verdict['compatibility_url']}[/dim]")
+
+    output.emit(verdict, render)
+    if not verdict.get("compatible"):
+        raise typer.Exit(1)

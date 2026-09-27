@@ -17,6 +17,9 @@ Usage:
     # Get dataset info
     ds = corerun.datasets.get("mnist")
 
+    # Upload a local directory, file or archive
+    ds = corerun.datasets.upload("./reviews", name="reviews")
+
     # View dataset rows
     viewer = corerun.datasets.view("mnist", page=1, page_size=10)
 
@@ -247,6 +250,171 @@ def from_url(
         workspace=workspace,
     )
     return Dataset(**response)
+
+
+# What the data service extracts. Anything else -- a directory, a CSV, a
+# JSONL file -- is packed into a .tar.gz here first, because an unpacked file
+# is refused there with "Unsupported file format".
+_ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
+
+
+def _default_name(path: Path) -> str:
+    """A dataset name from a path: its last part, without an archive suffix."""
+    base = path.name
+    for suffix in sorted(_ARCHIVE_SUFFIXES, key=len, reverse=True):
+        if base.lower().endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base.replace(".", "-").replace(" ", "-").lower() or "dataset"
+
+
+def _pack(path: Path, into: Path) -> None:
+    """Write path as a .tar.gz whose root is what the dataset should hold.
+
+    A directory's contents go at the root rather than under the directory's
+    own name; the service flattens a single top-level folder anyway, and
+    doing it here keeps a directory holding one folder from being flattened
+    twice. A single file sits at the root under its own name.
+    """
+    import tarfile
+
+    with tarfile.open(into, "w:gz") as tar:
+        if path.is_dir():
+            for child in sorted(path.iterdir()):
+                tar.add(child, arcname=child.name)
+        else:
+            tar.add(path, arcname=path.name)
+
+
+def upload(
+    path: str,
+    name: Optional[str] = None,
+    mount_path: Optional[str] = None,
+    description: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> Dataset:
+    """
+    Upload a local directory, file or archive as a new dataset.
+
+    The data service accepts .zip, .tar, .tar.gz and .tgz and extracts them
+    into the workspace's storage, converting tabular and image files to
+    Parquet on the way. An archive is sent as it is; a directory or any other
+    file is packed into a .tar.gz first.
+
+    Unlike an import, this answers once the data is stored: the returned
+    dataset already carries its size, file count and detected format.
+
+    Args:
+        path: A directory, a file, or a .zip/.tar/.tar.gz/.tgz archive
+        name: Dataset name (defaults to the path's last part, without the
+            archive suffix)
+        mount_path: Where containers see it (default /data/<name>)
+        description: Optional description
+        workspace: Workspace ID (uses default if not specified)
+
+    Returns:
+        Dataset object
+
+    Raises:
+        FileNotFoundError: If path does not exist
+        ValidationError: If a dataset of that name exists, or the workspace
+            has no storage room left
+
+    Example:
+        ds = corerun.datasets.upload("./reviews")
+        ds = corerun.datasets.upload("images.zip", name="product-images")
+    """
+    import tempfile
+
+    source = Path(path).expanduser()
+    if not source.exists():
+        raise FileNotFoundError(f"No such file or directory: {path}")
+
+    name = name or _default_name(source.resolve())
+    mount_path = mount_path or f"/data/{name}"
+
+    fields = {"name": name, "mount_path": mount_path}
+    if description:
+        fields["description"] = description
+
+    client = get_client()
+    with tempfile.TemporaryDirectory(prefix="corerun-upload-") as scratch:
+        if source.is_file() and source.name.lower().endswith(_ARCHIVE_SUFFIXES):
+            archive = source
+        else:
+            archive = Path(scratch) / f"{name}.tar.gz"
+            _pack(source, archive)
+
+        with open(archive, "rb") as handle:
+            response = client.post(
+                "/data/upload",
+                files={"file": (archive.name, handle, "application/octet-stream")},
+                data=fields,
+                workspace=workspace,
+                # The service answers after it has extracted, converted and
+                # stored everything, which for a large archive is minutes.
+                timeout=None,
+            )
+    return Dataset(**response)
+
+
+def update_metadata(
+    name: str,
+    *,
+    tags: Optional[List[str]] = None,
+    license: Optional[str] = None,
+    access_level: Optional[str] = None,
+    format: Optional[str] = None,
+    data_type: Optional[str] = None,
+    custom: Optional[Dict[str, Any]] = None,
+    unset: Optional[List[str]] = None,
+    workspace: Optional[str] = None,
+) -> DatasetMetadata:
+    """
+    Change what is recorded about a dataset. Only the fields given change.
+
+    Args:
+        name: Dataset name
+        tags: The dataset's tags -- replaces the list, not added to it
+        license: e.g. MIT, Apache-2.0, CC-BY-4.0, proprietary
+        access_level: private, team or public
+        format: What the files are (csv, parquet, images, text, ...)
+        data_type: What the data is (tabular, text, chat, instruction, ...)
+        custom: Key/value pairs to record, merged into those already there
+        unset: Custom keys to remove
+        workspace: Workspace ID (uses default if not specified)
+
+    Returns:
+        The metadata as it stands after the change
+
+    Example:
+        corerun.datasets.update_metadata("reviews", tags=["nlp", "en"], license="CC-BY-4.0")
+        corerun.datasets.update_metadata("reviews", custom={"owner": "search-team"})
+    """
+    client = get_client()
+
+    body: Dict[str, Any] = {}
+    if tags is not None:
+        body["tags"] = tags
+    if license is not None:
+        body["license"] = license
+    if access_level is not None:
+        body["access_level"] = access_level
+    if format is not None:
+        body["format"] = format
+    if data_type is not None:
+        body["data_type"] = data_type
+    if custom or unset:
+        # The service replaces the custom map whole, so a change to one key
+        # has to carry every other key with it or they are lost.
+        merged = dict(metadata(name, workspace=workspace).custom or {})
+        merged.update(custom or {})
+        for key in unset or []:
+            merged.pop(key, None)
+        body["custom"] = merged
+
+    response = client.put(f"/data/{name}/metadata", json=body, workspace=workspace)
+    return DatasetMetadata(**response)
 
 
 def view(

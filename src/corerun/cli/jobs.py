@@ -10,7 +10,6 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.live import Live
 from typing import Optional, List
-import time
 
 console = output.console
 app = typer.Typer(help="Job management commands")
@@ -318,7 +317,7 @@ def submit_job(
 @app.command("logs")
 def get_logs(
     job_id: str = typer.Argument(..., metavar="JOB", help="Job name or ID"),
-    follow: bool = typer.Option(False, "--follow", "-f", help="Follow logs (stream)"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Keep printing until the job ends"),
     tail: Optional[int] = typer.Option(None, "--tail", "-n", help="Number of lines"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
 ):
@@ -337,30 +336,26 @@ def get_logs(
     resolved = _resolve(job_id, workspace)
 
     if follow:
-        # Streaming logs
-        console.print(f"Following logs for job {job_id}... (Ctrl+C to stop)")
+        # Until the job ends, then stop: the SDK reads the job's status with
+        # every read of its log. A failure that may pass is retried there a
+        # few times; one that persists, or one that will not pass, ends the
+        # command non-zero with its reason rather than polling for ever.
+        console.print(f"[dim]Following logs for job {job_id}... (Ctrl+C to stop)[/dim]")
         try:
-            last_logs = ""
-            while True:
-                try:
-                    current_logs = jobs.logs(resolved, workspace=workspace)
-                    # Print new content
-                    if len(current_logs) > len(last_logs):
-                        new_content = current_logs[len(last_logs):]
-                        console.print(new_content, end="")
-                        last_logs = current_logs
-
-                    # Check if job is finished
-                    job = jobs.get(resolved, workspace=workspace)
-                    if job.is_finished:
-                        console.print(f"\n[dim]Job finished with status: {job.status}[/dim]")
-                        break
-
-                    time.sleep(2)
-                except Exception:
-                    time.sleep(2)
+            for chunk in jobs.follow_logs(resolved, workspace=workspace):
+                console.print(chunk, end="", markup=False, highlight=False)
         except KeyboardInterrupt:
-            console.print("\n[dim]Stopped following logs[/dim]")
+            console.print("\n[dim]Stopped following logs (the job keeps running)[/dim]")
+            raise typer.Exit(130)
+        except Exception as e:
+            console.print()
+            raise output.fail(f"Could not read the job's logs: {e}")
+        try:
+            status = jobs.get(resolved, workspace=workspace).status
+            status = getattr(status, "value", status)
+            console.print(f"\n[dim]Job finished with status: {status}[/dim]")
+        except Exception:
+            console.print("\n[dim]Job finished[/dim]")
     else:
         try:
             log_content = jobs.logs(resolved, tail=tail, workspace=workspace)

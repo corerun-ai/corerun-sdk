@@ -20,6 +20,9 @@ from corerun.http import decode_response
 
 T = TypeVar("T", bound=BaseModel)
 
+# "Use the configured timeout", as distinct from None, which means no limit.
+_CONFIGURED = object()
+
 
 class CoreRunClient:
     """
@@ -272,8 +275,11 @@ class CoreRunClient:
                 a route whose success body is a manifest rather than JSON.
         """
         if files is not None:
-            # Multipart form upload - need to handle differently
-            return self._post_multipart(path, files=files, data=data, workspace=workspace)
+            # Multipart form upload - need to handle differently. A timeout
+            # given here replaces the configured one: an upload the server
+            # processes before answering can take far longer than a request.
+            extra = {"timeout": kwargs["timeout"]} if "timeout" in kwargs else {}
+            return self._post_multipart(path, files=files, data=data, workspace=workspace, **extra)
         return self.request("POST", path, json=json, workspace=workspace, **kwargs)
 
     def download(
@@ -339,6 +345,7 @@ class CoreRunClient:
         files: Dict[str, Any],
         data: Optional[Dict[str, Any]] = None,
         workspace: Optional[str] = None,
+        timeout: Any = _CONFIGURED,
     ) -> Dict[str, Any]:
         """
         Make a POST request with multipart form data.
@@ -348,6 +355,8 @@ class CoreRunClient:
             files: Files to upload {field_name: (filename, file_obj, content_type)}
             data: Form data fields
             workspace: Override workspace ID
+            timeout: Seconds, or None for no limit; the configured timeout
+                when not given
         """
         headers = {
             "Authorization": f"Bearer {self.config.auth_token}",
@@ -360,7 +369,7 @@ class CoreRunClient:
         # Create a new client without default Content-Type header for multipart
         with httpx.Client(
             base_url=self.config.api_url,
-            timeout=self.config.timeout,
+            timeout=self.config.timeout if timeout is _CONFIGURED else timeout,
             verify=self.config.verify_ssl,
         ) as client:
             try:

@@ -8,7 +8,7 @@ from rich.console import Console
 from corerun.cli import output
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from typing import Optional
+from typing import List, Optional
 
 console = output.console
 app = typer.Typer(help="Dataset management commands")
@@ -497,3 +497,157 @@ def import_status(
         console.print(f"Message: {status.message}")
     if status.error:
         console.print(f"[red]Error:[/red] {status.error}")
+
+
+@app.command("upload")
+def upload_dataset(
+    path: str = typer.Argument(
+        ..., help="A directory, a file, or a .zip/.tar/.tar.gz/.tgz archive"
+    ),
+    name: Optional[str] = typer.Option(
+        None, "--name", "-n", help="Dataset name (default: from the path)"
+    ),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Description"),
+    mount_path: Optional[str] = typer.Option(
+        None, "--mount-path", help="Where containers see it (default /data/<name>)"
+    ),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Upload local data as a new dataset.
+
+    An archive is sent as it is; a directory or any other file is packed into
+    a .tar.gz first. The platform extracts it into the workspace's storage and
+    converts tabular and image files to Parquet, and answers once that is
+    done -- there is no import to follow.
+
+    Example:
+        corerun datasets upload ./reviews
+        corerun datasets upload train.jsonl --name support-chats
+        corerun datasets upload images.zip --name product-images -d "Catalogue photos"
+    """
+    _init_client()
+
+    import corerun.datasets as datasets
+
+    if json_output:
+        output.set_json(True)
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=output.errors,
+            transient=True,
+        ) as progress:
+            progress.add_task(f"Uploading {path}...", total=None)
+            ds = datasets.upload(
+                path, name=name, mount_path=mount_path,
+                description=description, workspace=workspace,
+            )
+    except Exception as e:
+        raise output.fail(str(e))
+
+    def render():
+        console.print(f"[green]✓[/green] Uploaded dataset '{ds.name}'")
+        console.print(f"  Size: {_format_size(ds.size_bytes)}  Files: {ds.file_count}")
+        console.print(f"  Mount Path: {ds.mount_path}")
+
+    output.emit(ds.model_dump(mode="json"), render)
+
+
+def _pairs(values: Optional[List[str]]) -> dict:
+    """KEY=VALUE options as a dict; a value may itself contain '='."""
+    pairs = {}
+    for item in values or []:
+        key, sep, value = item.partition("=")
+        if not sep or not key.strip():
+            raise output.fail(f"--set takes KEY=VALUE, not {item!r}")
+        pairs[key.strip()] = value
+    return pairs
+
+
+@app.command("metadata")
+def dataset_metadata(
+    name: str = typer.Argument(..., help="Dataset name"),
+    tag: Optional[List[str]] = typer.Option(
+        None, "--tag", "-t", help="Set the tags (repeatable; replaces the list)",
+    ),
+    clear_tags: bool = typer.Option(False, "--clear-tags", help="Remove every tag"),
+    license: Optional[str] = typer.Option(
+        None, "--license", help="e.g. MIT, Apache-2.0, CC-BY-4.0"
+    ),
+    access: Optional[str] = typer.Option(None, "--access", help="private, team or public"),
+    data_format: Optional[str] = typer.Option(
+        None, "--format", help="csv, parquet, images, text, ..."
+    ),
+    data_type: Optional[str] = typer.Option(
+        None, "--data-type", help="tabular, text, chat, instruction, ..."
+    ),
+    set_: Optional[List[str]] = typer.Option(
+        None, "--set", help="Record KEY=VALUE (repeatable; other keys are kept)",
+    ),
+    unset: Optional[List[str]] = typer.Option(
+        None, "--unset", help="Remove a recorded KEY (repeatable)"
+    ),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Show what is recorded about a dataset, or change it.
+
+    With no options it shows the metadata. Any option changes only that field.
+
+    Example:
+        corerun datasets metadata reviews
+        corerun datasets metadata reviews --tag nlp --tag en --license CC-BY-4.0
+        corerun datasets metadata reviews --set owner=search-team --unset draft
+    """
+    _init_client()
+
+    import corerun.datasets as datasets
+
+    if json_output:
+        output.set_json(True)
+
+    if access is not None and access not in ("private", "team", "public"):
+        raise output.fail("--access is one of private, team, public")
+
+    custom = _pairs(set_)
+    changing = any(v is not None for v in (license, access, data_format, data_type)) \
+        or bool(tag) or clear_tags or bool(custom) or bool(unset)
+
+    try:
+        if changing:
+            meta = datasets.update_metadata(
+                name,
+                tags=[] if clear_tags else (list(tag) if tag else None),
+                license=license,
+                access_level=access,
+                format=data_format,
+                data_type=data_type,
+                custom=custom or None,
+                unset=list(unset) if unset else None,
+                workspace=workspace,
+            )
+        else:
+            meta = datasets.metadata(name, workspace=workspace)
+    except Exception as e:
+        raise output.fail(str(e))
+
+    def render():
+        if changing:
+            console.print(f"[green]✓[/green] Updated '{name}'")
+        console.print(f"[bold]{name}[/bold]  [dim]{meta.dataset_id}[/dim]")
+        console.print(f"  Format:    {meta.format or '-'}")
+        console.print(f"  Data type: {meta.data_type or '-'}")
+        console.print(f"  Tags:      {', '.join(meta.tags) if meta.tags else '-'}")
+        console.print(f"  License:   {meta.license or '-'}")
+        console.print(f"  Access:    {meta.access_level or '-'}")
+        if meta.stats and meta.stats.record_count is not None:
+            console.print(f"  Records:   {meta.stats.record_count}")
+        for key, value in sorted((meta.custom or {}).items()):
+            console.print(f"  {key}: {value}", markup=False, highlight=False)
+
+    output.emit(meta.model_dump(mode="json", by_alias=True), render)

@@ -196,7 +196,7 @@ def deploy_server(
     ),
     model_source: str = typer.Option(
         "huggingface", "--source",
-        help="Where the weights come from: huggingface, mlflow, registry, or path "
+        help="Where the weights come from: huggingface, registry, or path "
              "for a directory already on the machine",
     ),
     endpoint: Optional[str] = typer.Option(
@@ -443,6 +443,54 @@ def restart_server(
         raise typer.Exit(1)
 
     console.print("[green]Restart requested[/green]")
+
+
+@app.command("regenerate-key")
+def regenerate_key(
+    server_id: str = typer.Argument(..., metavar="SERVER", help="Server name or ID"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    force: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Replace an inference server's API key, and print the new one.
+
+    The old key stops working at once, and every caller using it has to switch
+    to the new one. A running server is redeployed with the new key, so it
+    stops answering briefly while it loads again; a stopped one takes the key
+    when it next starts. Clients calling through a model endpoint use the
+    endpoint's key and are unaffected.
+
+    Example:
+        corerun inference regenerate-key mistral
+        corerun inference regenerate-key mistral --yes --json
+    """
+    _init_client()
+
+    import corerun.inference as inference
+
+    resolved = _resolve(server_id, workspace)
+
+    if json_output:
+        output.set_json(True)
+    if not force:
+        output.confirm(f"Replace the API key of '{server_id}'? The current key stops working.")
+
+    try:
+        key = inference.regenerate_key(resolved, workspace=workspace)
+    except Exception as e:
+        raise output.fail(str(e))
+
+    def render():
+        console.print(f"[green]New API key[/green] for {server_id} (shown once):")
+        # Printed bare, so it can be selected or piped without the markup.
+        console.print(key, markup=False, highlight=False)
+        console.print(
+            "[dim]The old key no longer works; callers using it must switch. A running "
+            f"server is redeploying with it: corerun inference wait {server_id}[/dim]"
+        )
+
+    output.emit({"server_id": resolved, "api_key": key}, render)
 
 
 @app.command("update")

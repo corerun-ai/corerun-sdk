@@ -1,6 +1,6 @@
 ---
 name: corerun-jobs
-description: Submit, monitor, and debug training jobs on corerun — run a folder of training code on a GPU profile, from flags or a corerun.yaml job file, list jobs, read logs, check status, stop or delete them. Use for any request to train a model, run a training script, check why a job failed, or find what is currently running.
+description: Submit, monitor, and debug training jobs on corerun — run a folder of training code or a workspace code repository on a GPU profile, from flags or a corerun.yaml job file, list jobs, follow logs, check status, stop or delete them. Use for any request to train a model, run a training script, check why a job failed, or find what is currently running.
 ---
 
 # corerun jobs
@@ -9,7 +9,7 @@ description: Submit, monitor, and debug training jobs on corerun — run a folde
 corerun jobs list                     # everything in the workspace
 corerun jobs list --status running
 corerun jobs get <job-id>
-corerun jobs logs <job-id>            # add --follow to stream
+corerun jobs logs <job-id>            # --follow: print as written, stop when the job ends
 corerun jobs wait <job-id>
 corerun jobs cancel <job-id>
 ```
@@ -73,6 +73,22 @@ corerun repos push trainer ./my-project          # the workspace's own repositor
 corerun jobs submit ... --repo trainer --ref main --path src -- python train.py
 ```
 
+The workspace's own repositories live on the platform, and jobs clone from
+them:
+
+```bash
+corerun repos list
+corerun repos show trainer [--ref <branch>]      # branches, tags and files
+corerun repos push trainer ./src --branch experiment-2 -m "lower lr"
+corerun repos create trainer                     # empty; push creates one anyway
+corerun repos delete trainer                     # and all of its history
+```
+
+`repos push` makes the directory the branch's whole tree (its `.gitignore`
+applies), so pushing a subfolder to an existing branch deletes everything else
+on it — push to a new `--branch` when unsure. Deleting a repository breaks
+every job file and re-run that names it; confirm with the human first.
+
 A private repository on GitHub or another host needs a git connection
 (Workspace settings → Integrations); a public https URL needs none. In a job
 file, `repo: {name, ref, path}` or `git: {url, connection, ref, path}` replaces
@@ -106,11 +122,20 @@ files that registering the run makes a model version of:
 corerun runs register <run-id> <model>     # or: corerun models from-job <model> --job <job-id>
 corerun runs models <run-id>               # what it became, and where the files are
 ```
- A notebook logging with
-`mlflow.set_experiment(...)` lands in the same experiments.
+
+A notebook logging through the same tracking client lands in the same
+experiments.
 
 In the console: Experiments in the ML rail (training experiments only) → the
 experiment → Runs, Charts, Compare, Models; or the job's Metrics tab.
+
+## Following one
+
+`corerun jobs logs <job-id> --follow` prints the log as it is written and exits
+when the job reaches `succeeded`, `failed` or `stopped`, saying which. A
+failure to read it is retried a few times, then the command exits non-zero with
+the reason rather than waiting silently. Ctrl-C stops following; the job keeps
+running.
 
 ## Debugging a failure
 
