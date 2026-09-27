@@ -897,15 +897,21 @@ def check_compatibility(
     image: Optional[str] = None,
     architecture: Optional[str] = None,
     quantization: Optional[str] = None,
+    compute_name: Optional[str] = None,
+    profile: Optional[str] = None,
+    gpu: Optional[float] = None,
     workspace: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Whether an engine image can serve a model, before a deployment finds out.
+    Whether a model can be served, before a deployment finds out.
 
     The answer comes from the same code that refuses a create, so the two
-    cannot disagree. It checks the model against one image: the one named, or
-    the engine's default. With neither, the engine is the one the catalogue
-    says serves the model, and vllm when the catalogue does not know it.
+    cannot disagree. Without a cluster it checks the model against one image:
+    the one named, or the engine's default. With a cluster it checks the model
+    on that cluster: the image its card would be given, whether the card's
+    family needs a newer engine, and whether a host serving natively (a Mac)
+    can load the weights. With no engine or image, the engine is the one the
+    catalogue says serves the model, and vllm when the catalogue does not know it.
 
     Args:
         model_id: The model's id (a Hugging Face id, or a catalogue slug)
@@ -913,12 +919,16 @@ def check_compatibility(
         image: A specific image, instead of the engine's default
         architecture: The model's architecture, when the catalogue lacks it
         quantization: The weights' quantization, when the catalogue lacks it
+        compute_name: The cluster to check against
+        profile: The cluster's profile, whose card and images it names
+        gpu: GPUs the deployment would ask for (a deployment's default is 1)
         workspace: Workspace ID (uses default if not specified)
 
     Returns:
         Dict with ``compatible`` and ``reason``, and what was checked:
         ``image``, ``engine``, ``engine_version``, ``engine_known``, and when
-        the catalogue records them ``cuda_version`` and ``compatibility_url``
+        the catalogue records them ``cuda_version`` and ``compatibility_url``;
+        with a cluster also ``cluster``, ``accelerator`` and ``serves_natively``
 
     Example:
         verdict = corerun.inference.check_compatibility("Qwen/Qwen3-8B")
@@ -938,6 +948,12 @@ def check_compatibility(
         body["architecture"] = architecture
     if quantization:
         body["quantization"] = quantization
+    if compute_name:
+        body["compute_name"] = compute_name
+    if profile:
+        body["profile"] = profile
+    if gpu is not None:
+        body["gpu"] = gpu
 
     client = get_client()
     return client.post("/inference-servers/catalog/check", json=body, workspace=workspace) or {}

@@ -310,16 +310,25 @@ def check_model(
     quantization: Optional[str] = typer.Option(
         None, "--quantization", "-q", help="The weights' quantization, if the catalogue lacks it",
     ),
+    compute: Optional[str] = typer.Option(
+        None, "--compute", "-c", help="Check on this cluster: its card, and the image it would get",
+    ),
+    profile: Optional[str] = typer.Option(None, "--profile", help="The cluster's profile to check with"),
+    gpu: Optional[float] = typer.Option(None, "--gpu", help="GPUs the deployment would ask for (default 1)"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """
-    Whether an engine image can serve a model, before a deployment finds out.
+    Whether a model can be served, before a deployment finds out.
 
     Decided by the same code that refuses a deployment, so the two agree.
-    Exits 1 when the model cannot be served, so a script can gate on it.
+    With --compute the answer is about that cluster: the image its card would
+    be given, whether the card needs a newer engine, and whether a Mac can
+    load the weights at all. Exits 1 when the model cannot be served, so a
+    script can gate on it.
 
     Example:
         corerun catalogue check Qwen/Qwen3-8B
+        corerun catalogue check Qwen/Qwen3-8B --compute gb10dgx01
         corerun catalogue check Qwen/Qwen3-8B --image vllm/vllm-openai:v0.11.0
     """
     _init_client()
@@ -330,6 +339,7 @@ def check_model(
         verdict = inference.check_compatibility(
             model_id, engine=engine, image=image,
             architecture=architecture, quantization=quantization,
+            compute_name=compute, profile=profile, gpu=gpu,
         )
     except Exception as e:
         raise output.fail(str(e))
@@ -341,10 +351,16 @@ def check_model(
         engine_name = verdict.get("engine") or "an unrecorded engine"
         if verdict.get("engine_version"):
             engine_name += f" {verdict['engine_version']}"
-        against = f"{verdict.get('image') or '(no image)'} [dim]({engine_name})[/dim]"
+        if verdict.get("serves_natively"):
+            against = f"{verdict.get('cluster')} [dim](serves natively)[/dim]"
+        else:
+            against = f"{verdict.get('image') or '(no image)'} [dim]({engine_name})[/dim]"
+        if verdict.get("cluster") and not verdict.get("serves_natively"):
+            card = (verdict.get("accelerator") or {}).get("name")
+            against += f" on {verdict['cluster']}" + (f" [dim]({card})[/dim]" if card else "")
         if verdict.get("compatible"):
             console.print(f"[green]Compatible[/green]  {model_id} on {against}")
-            if not verdict.get("engine_known"):
+            if not verdict.get("engine_known") and not verdict.get("serves_natively"):
                 # Nothing to check against is not the same as a pass.
                 console.print(
                     "[dim]  The catalogue does not record this image, so little was checked.[/dim]"

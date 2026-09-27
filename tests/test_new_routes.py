@@ -337,6 +337,22 @@ def test_the_check_command_exits_one_when_it_cannot_be_served(wire):
     assert json.loads(ok.stdout)["compatible"] is True
 
 
+def test_the_check_is_asked_about_a_cluster(wire):
+    seen, answers = wire
+    answers[("POST", "/inference-servers/catalog/check")] = {
+        "compatible": False, "reason": "this card's family needs vllm 0.11.0 or later",
+        "image": "vllm/vllm-openai:v0.10.0", "engine": "vllm", "engine_version": "0.10.0",
+        "engine_known": True, "cluster": "gb10dgx01", "serves_natively": False,
+        "accelerator": {"family": "nvidia/blackwell", "name": "GB10", "source": "cluster"},
+    }
+    result = runner.invoke(app, ["catalogue", "check", "Qwen/Qwen3-8B", "--engine", "vllm",
+                                 "--compute", "gb10dgx01", "--gpu", "1"])
+    assert result.exit_code == 1
+    assert "gb10dgx01" in result.output and "GB10" in result.output
+    body = json.loads([r for r in seen if r.url.path.endswith("/check")][-1].content)
+    assert body == {"model_id": "Qwen/Qwen3-8B", "server_type": "vllm", "compute_name": "gb10dgx01", "gpu": 1.0}
+
+
 # -- tokens revoke ------------------------------------------------------------
 
 

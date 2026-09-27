@@ -23,14 +23,17 @@ corerun catalogue list --search qwen          # --engine vllm, --limit 0 for all
 corerun catalogue show <slug-or-model-id>     # builds, memory, cards, features
 corerun catalogue engines                     # images, engine versions, CUDA
 corerun catalogue check <model-id>            # can the engine's image serve it?
+corerun catalogue check <model-id> --compute <cluster>   # ...on that cluster's card
 corerun catalogue check <model-id> --image <image>
 ```
 
 A model need not be in the catalogue to be deployed by its Hugging Face id.
 `catalogue check` is decided by the code that refuses a deployment, and exits 1
 when the model cannot be served — read its reason (usually an engine too old for
-the architecture) before trying another image. It checks one image; it does not
-look at a cluster's cards, which is what `--dry-run` below is for.
+the architecture) before trying another image. With `--compute` it answers for
+that cluster: the image its card would be given, whether the card's family needs
+a newer engine, and whether a Mac can load the weights at all. `--dry-run` below
+goes further, to the arguments the deployment would launch with.
 
 ## Deploying
 
