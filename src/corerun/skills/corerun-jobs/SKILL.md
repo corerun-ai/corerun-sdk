@@ -12,6 +12,7 @@ corerun jobs get <job-id>
 corerun jobs logs <job-id>            # --follow: print as written, stop when the job ends
 corerun jobs wait <job-id>
 corerun jobs cancel <job-id>
+corerun jobs delete <job-id>          # the record too; --yes skips the prompt
 ```
 
 ## Running training code

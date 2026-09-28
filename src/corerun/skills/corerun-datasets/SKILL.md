@@ -72,3 +72,12 @@ Check it exists and matches what the training code expects:
 immediately on a data path or a column name is nearly always a mismatch here,
 so read the schema rather than assuming the shape. Inside a job the dataset is
 read-only at its mount path.
+
+## Removing one
+
+```bash
+corerun datasets delete <name>           # --yes once the human has agreed
+```
+
+Confirm with the human first: a job or fine-tune that names it can no longer
+find it.

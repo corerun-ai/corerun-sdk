@@ -9,6 +9,25 @@ These are the administrative commands: they change what exists for everyone in
 the organization, not what runs inside one workspace. Most need an
 organization administrator.
 
+## Signing in
+
+```bash
+corerun login --url https://<console>        # opens a browser
+corerun login --url https://<console> --use-device-code   # a code to approve elsewhere, for a server
+corerun auth whoami                          # address, workspace, whether it connects
+corerun auth status                          # the same answer
+corerun logout                               # same as `corerun auth logout`
+corerun version
+```
+
+`corerun login` and `corerun auth login` are one command, as are `logout` and
+`auth logout`. Logout removes the token and keeps the recorded address, so the
+next login goes back to the same deployment. `--token` signs in with a token
+already in hand (a scoped one from `corerun tokens create`) instead of a
+browser; `-w` records the default workspace at the same time. The skills
+themselves: `corerun skills list`, and `corerun skills install --force` after
+upgrading the CLI.
+
 ## Which workspace you are in
 
 Every resource command acts in one workspace, sent as a header. Check before
@@ -25,7 +44,7 @@ corerun workspace set speech    # change it
 ## Creating a workspace
 
 ```bash
-corerun ws create "ML Research"
+corerun workspace create "ML Research"
 corerun ws create "Speech" --slug speech --capabilities notebooks,training
 corerun ws create "Scratch" --use
 ```
@@ -50,7 +69,7 @@ account re-provisions every workspace under it.
 ## Changing a workspace
 
 ```bash
-corerun ws edit speech --name "Speech Research"
+corerun workspace edit speech --name "Speech Research"
 corerun ws edit speech --kind deploy
 corerun ws edit speech --capabilities notebooks,training,models
 ```
@@ -86,7 +105,7 @@ and never set an allow list on someone's behalf without it.
 ## Deleting a workspace
 
 ```bash
-corerun ws delete scratch
+corerun workspace delete scratch
 corerun ws delete scratch --yes
 ```
 
@@ -134,7 +153,9 @@ before running either.
 corerun clusters list
 corerun clusters get <name>
 corerun clusters profiles <name>       # the shapes people can launch
+corerun clusters types                 # what a cluster can be added as, and its defaults
 corerun clusters add <name>            # prints the manifest to apply
+corerun clusters manifest <name>       # that manifest again, as it stands now
 corerun clusters rm <name>
 corerun hosts add <name>               # bare metal; prints an installer
 corerun hosts rm <name>
@@ -154,6 +175,24 @@ cluster to one workspace is refused while other workspaces have work running on
 it; say which, rather than stopping their work to make it pass. A host's
 architecture is detected when it connects — `hosts add` does not need `--arch`.
 
+`corerun compute list` shows the targets work can name with `--compute`;
+`corerun compute get <name>` one of them in full, and `corerun compute types`
+the kinds this platform supports.
+
 `clusters add` and `hosts add` do not reach out to the machine. They hand back
 a manifest or an installer for somebody to run there, and the operator joins
 from its side. Nothing runs until it does.
+
+### An operator's token
+
+```bash
+corerun clusters token rotate <name>   # new token; the connected operator drops off
+corerun clusters token revoke <name>   # clear it; the operator can no longer connect
+```
+
+**Rotating disconnects the cluster until it is given the new token** — it does
+not come back on its own. Re-fetch `corerun clusters manifest <name>` and apply
+it on the cluster (or re-run a host's connect command). Revoking clears only
+the token the cluster holds now, not a replacement already handed out, so it is
+not a way to cut off an operator you have lost track of. Confirm either with the
+human: work running there becomes unreachable.

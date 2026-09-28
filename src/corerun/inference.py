@@ -94,6 +94,10 @@ class InferenceServer(BaseModel):
     model_facts: Optional[dict] = None
     features: List[str] = []
     engine_version: Optional[str] = None
+    # What the engine itself reported once running, and when -- as opposed to
+    # engine_version, which is what the catalogue claimed at deploy.
+    running_engine_version: Optional[str] = None
+    running_engine_version_at: Optional[datetime] = None
     lora_modules: List[LoRAModuleInfo] = []  # LoRA adapters loaded on base model
     owner_id: str
     created_at: Optional[datetime] = None
@@ -231,6 +235,8 @@ def _server_from_response(data: dict) -> InferenceServer:
         model_facts=data.get("model_facts"),
         features=data.get("features") or [],
         engine_version=data.get("engine_version"),
+        running_engine_version=data.get("running_engine_version"),
+        running_engine_version_at=data.get("running_engine_version_at"),
         lora_modules=lora_modules,
         owner_id=data.get("owner_id", ""),
         created_at=data.get("created_at"),

@@ -106,6 +106,22 @@ def list_servers(
     console.print(table)
 
 
+def _engine_label(s) -> str:
+    """The engine version beside the image: what the running engine reported
+    when it has, else what the catalogue claimed at deploy."""
+    if s.running_engine_version:
+        seen = ""
+        if s.running_engine_version_at:
+            seen = f", seen {s.running_engine_version_at.strftime('%Y-%m-%d %H:%M')}"
+        claimed = ""
+        if s.engine_version and s.engine_version != s.running_engine_version:
+            claimed = f"; catalogue said {s.engine_version}"
+        return f" [dim](engine {s.running_engine_version}, running{seen}{claimed})[/dim]"
+    if s.engine_version:
+        return f" [dim](engine {s.engine_version})[/dim]"
+    return ""
+
+
 @app.command("get")
 def get_server(
     server_id: str = typer.Argument(..., metavar="SERVER", help="Server name or ID"),
@@ -149,8 +165,7 @@ def get_server(
     if s.openai_base_url:
         console.print(f"  OpenAI base URL: {s.openai_base_url}")
     if s.image:
-        engine = f" [dim](engine {s.engine_version})[/dim]" if s.engine_version else ""
-        console.print(f"  Image:    {s.image}{engine}")
+        console.print(f"  Image:    {s.image}{_engine_label(s)}")
     if s.features:
         console.print(f"  Features: {', '.join(s.features)}")
     _print_facts(s.model_facts)
@@ -341,7 +356,9 @@ def scale_server(
     """
     Scale an inference server's replicas.
 
-    Scaling up allocates more GPUs.
+    Kept for older callers: a server runs as a single instance, and the
+    platform refuses this with its reason. More capacity is a deployment on a
+    larger card.
 
     Example:
         corerun inference scale abc123 --min-replicas 2 --max-replicas 4

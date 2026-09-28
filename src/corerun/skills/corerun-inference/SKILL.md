@@ -41,9 +41,14 @@ goes further, to the arguments the deployment would launch with.
 corerun quota show                           # GPU and server headroom first
 corerun compute list                         # valid --compute values
 corerun endpoints list                       # the addresses that already exist
+corerun inference recipe <model-id>          # the publisher's arguments, image, context
 corerun inference deploy --name <name> --model <model-id> --compute <target> --dry-run
 corerun inference deploy --name <name> --model <model-id> --compute <target> --gpu 1
 ```
+
+`inference recipe` shows what the model's publisher says to serve it with —
+engine arguments, image, minimum engine version, context length — before any
+compute is chosen. `No serving recipe published` is an answer, not an error.
 
 **Look before deploying: `--dry-run`.** It runs every check a deployment makes
 and answers with what the server would run — the published recipe found for the
@@ -97,7 +102,7 @@ config.json is the architecture it descends from (a Qwen3.8 checkpoint says
 The address, its keys, and publishing models somebody else runs are the
 [corerun-endpoints](../corerun-endpoints/SKILL.md) skill.
 
-**Deploying and scaling up allocate GPUs and hold them until stopped** — an
+**Deploying allocates GPUs and holds them until stopped** — an
 endpoint is a standing cost, unlike a job that finishes. Confirm the model,
 engine, GPU count and compute target with the human before deploying, and never
 deploy a second copy of something already running: check `corerun inference list`
@@ -126,7 +131,11 @@ routing, takes effect at once and redeploys nothing.
 
 `corerun inference get` shows the image and its engine version, what the model
 says about itself, and the engine arguments it runs with — the recipe's and the
-card's as well as yours.
+card's as well as yours. The engine version is the one the running engine
+reported, with when it was seen (`engine 0.11.2, running, seen ...`), and the
+catalogue's claim beside it when the two differ; before the engine has
+reported, it is the catalogue's alone. Trust the running one when deciding
+which flags the engine accepts.
 
 ## How it is doing
 
@@ -155,20 +164,56 @@ model endpoint use the endpoint's key (see
 that one instead when the question is a caller's key. Confirm with the human
 before regenerating, and hand the key over rather than writing it anywhere.
 
-## Stopping
+## Stopping, starting, restarting
 
 ```bash
 corerun inference stop <server-id>           # releases GPUs, keeps the record
+corerun inference start <server-id>          # a stopped one, on the same settings
+corerun inference restart <server-id>        # redeploy a running, pending or failed one
 corerun inference delete <server-id> --yes   # --yes: there is no prompt without a terminal
 ```
 
-A server runs as one instance; there is no replica scaling. **Stopping or
+`restart` reloads the weights, so the server stops answering until it is up
+again; a stopped server takes `start`, not `restart`. A server runs as one
+instance: `corerun inference scale <server-id> --min-replicas N --max-replicas N`
+exists for older callers and is refused (`not_scalable`) — more capacity is a
+deployment on a larger card, not a replica count. **Stopping or
 deleting an endpoint someone is using is an outage** — confirm with the human
 before either, and never do it to free capacity for your own work. A stopped
 server does not count against the workspace's server limit.
 
 Without a terminal, a command that asks for confirmation fails with exit code 2
 and deletes nothing; pass `--yes` once the human has agreed.
+
+## Accelerators
+
+What each accelerator family can do — KV-cache dtypes, quantizations, the
+arguments a deployment adds — decides the image and flags a card gets:
+
+```bash
+corerun accelerators list                    # the families this platform knows
+corerun accelerators show h100               # a family or a card
+corerun accelerators cards                   # which cards are tagged to which family
+corerun accelerators cards --family nvidia/grace-blackwell --search gb10
+```
+
+Reading is open to anyone in a workspace. Writing is **platform
+administration** — a platform-wide decision, since an H100 is an H100 in every
+organisation — and exists only where the platform-administration routes are
+served; an enterprise install answers 404 by design:
+
+```bash
+corerun accelerators add nvidia/rubin --from-file rubin.yaml   # or --from-url, --json '<doc>'
+corerun accelerators rm nvidia/rubin                           # recorded families only
+corerun accelerators tag "rtx pro 5000" --family nvidia/blackwell-rtx --note "why, for the next person"
+corerun accelerators tag gb10 --family nvidia/grace-blackwell --device-id 10de:2e12
+corerun accelerators untag "rtx pro 5000"                      # --device-id when the tag has one
+```
+
+The compiled-in families cannot be removed; record one of the same name to
+override it. Prefer `--device-id` when the machine reports one — it is the
+card's own claim, not a spelling. Tagging changes what every later deployment
+on that card is given, so confirm with the human.
 
 ## When an endpoint does not answer
 

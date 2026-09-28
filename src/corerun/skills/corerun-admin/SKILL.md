@@ -74,6 +74,9 @@ corerun groups create "ML Research"
 corerun groups grant ml-research research --role engineer
 corerun groups add ml-research sara@acme.com
 corerun groups show ml-research
+corerun groups remove ml-research sara@acme.com   # loses what the group gave, everywhere
+corerun groups revoke ml-research research        # the group's role in that workspace goes
+corerun groups delete ml-research                 # every member loses its access; seats stay
 ```
 
 With single sign-on, let the directory decide who is in a group: link the
@@ -131,6 +134,7 @@ Workspace, or by DNS for anything else:
 corerun org domains add acme.com        # prints the TXT record to publish
 corerun org domains verify acme.com     # once the record is live
 corerun org domains list
+corerun org domains remove acme.com     # its addresses stop routing here
 ```
 
 Publishing the record is the domain owner's step; hand the name and value to
@@ -171,6 +175,10 @@ secret is the first suspect:
 corerun org sso update "Acme Entra" --client-secret <new secret>
 ```
 
+```bash
+corerun org sso remove "Acme Entra"
+```
+
 **Never remove or deactivate the only working provider** without another way
 in -- you lock out every administrator, yourself included. `sso remove` is
 refused (`last_way_in`) while people at its domain sign in only through it;
@@ -207,7 +215,15 @@ Suspected leak: `disable` refuses its tokens at once, and nothing else changes.
 
 ```bash
 corerun org service-accounts disable ci-deployer
+corerun org service-accounts enable ci-deployer          # after the secret is rotated
 corerun org service-accounts delete ci-deployer --yes
+```
+
+What one can reach, and taking a workspace away from it:
+
+```bash
+corerun org service-accounts workspaces ci-deployer
+corerun org service-accounts revoke ci-deployer production
 ```
 
 A person's own token for a script is `corerun tokens create`; prefer a service
@@ -248,6 +264,7 @@ shared with the whole organisation:
 corerun org git add github --token <fine-grained read-only token> --note "acme/trainer, acme/data-tools"
 corerun org git test github acme/trainer
 corerun org git list
+corerun org git remove github           # jobs naming it can no longer clone
 ```
 
 Use a token that can **read** only the repositories needed, and say which in
@@ -261,6 +278,7 @@ console.
 corerun org usage
 corerun org prices list
 corerun org prices set openai gpt-4o --input 2.0 --output 8.0
+corerun org prices clear openai gpt-4o      # back to the list price, from now on
 ```
 
 `usage` is this month against the plan, with model calls, tokens and spend per
@@ -302,7 +320,9 @@ corerun org audit add splunk --kind webhook \
 corerun org audit add qradar --kind syslog --address siem.example.com:6514 --format cef
 corerun org audit exports
 corerun org audit test splunk
-corerun org audit disable splunk        # pause; `enable` resumes, `remove` forgets it
+corerun org audit disable splunk        # pause
+corerun org audit enable splunk         # resume
+corerun org audit remove splunk         # stop sending, and forget it
 ```
 
 A destination is sent a test event before it is added, and refused if it does

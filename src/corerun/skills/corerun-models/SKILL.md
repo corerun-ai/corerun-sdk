@@ -54,6 +54,19 @@ goes through the platform's git proxy, which checks access per request, and is
 sent as a header rather than in the URL so it does not end up written into
 `.git/config`.
 
+## Publishing to Hugging Face
+
+```bash
+corerun models publish <name> --to acme/<repo>             # latest version, private repo
+corerun models publish <name> --to acme/<repo> -v 3 --public -m "v3: longer context"
+```
+
+The other direction from `import`: the push runs on the platform, weights and
+all, with a Hugging Face write token from `--token` or `HF_TOKEN`. The
+repository is created private unless `--public`. **A public repository is
+public to everyone** — confirm with the human before `--public`, and before
+publishing anything they have not named.
+
 ## Stages and aliases
 
 ```bash

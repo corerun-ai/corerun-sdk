@@ -21,11 +21,17 @@ distinct `--served-name` / `--model`.
 
 ```bash
 corerun endpoints list
+corerun endpoints create <name> -d "Support bot"   # empty: address and key now, models later
 corerun endpoints show <name>                # address, keys, what answers
 corerun endpoints models <name>              # ask the endpoint itself
 corerun endpoints call <name> "prompt" --stream
 corerun endpoints metrics <name> --range 24h # every model behind it, one row each
 ```
+
+`create` is for handing out an address before anything serves behind it; a
+deployment with `--endpoint <name>` or `add-upstream` fills it later. A
+deployment without `--endpoint` creates its own, so there is no need to create
+one first.
 
 ## The address
 

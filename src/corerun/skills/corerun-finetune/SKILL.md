@@ -13,7 +13,9 @@ corerun finetune create --name <name> \
     --eval-split 0.1 --as <result-model-name>
 corerun finetune wait <job-id>
 corerun finetune logs <job-id> --follow    # loss as it is logged
-corerun finetune stop <job-id>             # keeps the record; delete removes it
+corerun finetune get <job-id>              # status, method, dataset, hyperparameters, error
+corerun finetune stop <job-id>             # keeps the record
+corerun finetune delete <job-id>           # removes it; --yes skips the prompt
 ```
 
 Methods: `lora` (adapters on a bf16 base), `qlora` (a 4-bit base: fits a model
