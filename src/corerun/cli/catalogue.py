@@ -371,6 +371,11 @@ def check_model(
                 console.print(f"  {verdict['reason']}")
         if verdict.get("cuda_version"):
             console.print(f"  [dim]Built against CUDA {verdict['cuda_version']}[/dim]")
+        if verdict.get("engine_version") and verdict.get("engine_verified_at"):
+            console.print(
+                f"  [dim]Version {verdict['engine_version']} as a running engine reported it, "
+                f"{str(verdict['engine_verified_at'])[:10]}[/dim]"
+            )
         if verdict.get("compatibility_url") and not verdict.get("compatible"):
             console.print(f"  [dim]What it serves: {verdict['compatibility_url']}[/dim]")
 
