@@ -102,7 +102,7 @@ a cron. Put it in the environment rather than in a call, so it does not end up
 in a file somebody commits:
 
 ```bash
-export CORERUN_AUTH_TOKEN=cr-xxx
+export CORERUN_AUTH_TOKEN=crn_xxx
 export CORERUN_WORKSPACE=your-workspace-id
 ```
 
@@ -253,7 +253,7 @@ model = corerun.registry.create_model(
 # Record a version. The files are already in workspace storage -- moving them
 # in and out is the CLI's job, because it needs git-lfs:
 #   corerun models push resnet50 ./checkpoint -f pytorch
-#   corerun models pull resnet50 --alias champion
+#   corerun models pull resnet50@1 ./resnet50
 version = corerun.registry.create_version(
     "resnet50",
     storage_path="models/resnet50/1",
@@ -416,8 +416,8 @@ corerun models push my-model ./checkpoint -f pytorch
 corerun models push my-model ./checkpoint -d "Trained for 100 epochs"
 
 # Download a model
-corerun models pull my-model --version 1
-corerun models pull my-model --alias champion
+corerun models pull my-model ./my-model        # the latest version
+corerun models pull my-model@1 ./my-model-v1   # one version
 
 # List versions
 corerun models versions my-model
@@ -517,14 +517,14 @@ replaces the file every few hours while the notebook runs — the SDK reads it
 when it needs it, and re-reads it after a 401, so a renewal is invisible.
 
 It is the last source consulted, so anything you choose yourself — `corerun
-login`, `CORERUN_AUTH_TOKEN`, an explicit `api_key=` — keeps your own identity.
+login`, `CORERUN_AUTH_TOKEN`, an explicit `auth_token=` — keeps your own identity.
 
 ### Config File
 
 Credentials can be saved to `~/.corerun/config`:
 
 ```ini
-api_key=cr-xxx
+auth_token=crn_xxx
 workspace=your-workspace-id
 api_url=https://dev.corerun.ai/api/v1
 timeout=30
