@@ -1,7 +1,7 @@
 """
 Inference Servers module for corerun SDK.
 
-Provides functions for deploying and managing inference servers (vLLM, Ollama).
+Provides functions for deploying and managing inference servers (vLLM, Triton).
 
 Usage:
     import corerun
@@ -58,7 +58,7 @@ class InferenceServer(BaseModel):
 
     id: str
     name: str
-    server_type: str  # vllm, ollama
+    server_type: str  # vllm, triton
     model_source: str  # huggingface, registry, path
     model_id: str
     model_version: Optional[str] = None
@@ -149,7 +149,7 @@ class LoRAModule(BaseModel):
 class CreateInferenceServerRequest(BaseModel):
     """Request to create an inference server."""
     name: str
-    server_type: str = "vllm"  # vllm, ollama
+    server_type: str = "vllm"  # vllm, triton
     model_source: str = "huggingface"  # huggingface, registry, path
     model_id: str
     model_version: Optional[str] = None
@@ -335,7 +335,7 @@ def deploy(
         name: Server name
         model_id: Model identifier (HuggingFace ID, registry name, or a path)
         compute_name: Compute target name (cluster)
-        server_type: Server type ("vllm" or "ollama")
+        server_type: Server type ("vllm" or "triton")
         model_source: Model source ("huggingface", "registry", "path").
             "path" serves weights already on the machine — model_id is then the
             directory, and nothing is downloaded.
@@ -848,7 +848,7 @@ def catalogue(
 
     Args:
         limit: Only the first N, for a quick look
-        engine: Only models this engine serves (vllm, sglang, triton)
+        engine: Only models this engine serves (vllm, triton)
         workspace: Workspace ID (uses default if not specified)
 
     Returns:

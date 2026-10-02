@@ -346,6 +346,21 @@ corerun org audit remove splunk         # stop sending, and forget it
 A destination is sent a test event before it is added, and refused if it does
 not arrive. Pass the token through `--token-env`, never on the command line.
 
+## Agent sandboxes
+
+How long agents' sandboxes may sit unused, and how many ready sandboxes agents
+keep, for the whole organisation:
+
+```bash
+corerun org agents show
+corerun org agents set --idle-default 15 --idle-max 60
+corerun org agents set --ready-per-agent 2 --ready-per-org 6
+corerun org agents set --ready-per-org -1        # back to the installation's
+```
+
+Agent managers may only tighten these. Ready sandboxes hold memory on the
+organisation's compute while they wait: ask before raising them.
+
 ## Do not
 
 - Do not remove the last identity provider, or tighten network rules, without

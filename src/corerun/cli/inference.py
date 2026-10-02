@@ -207,7 +207,7 @@ def deploy_server(
     ),
     compute: str = typer.Option(..., "--compute", "-c", help="Compute target name"),
     server_type: str = typer.Option(
-        "vllm", "--type", "-t", help="Server engine: vllm, sglang or ollama"
+        "vllm", "--type", "-t", help="Server engine: vllm (language models) or triton"
     ),
     model_source: str = typer.Option(
         "huggingface", "--source",

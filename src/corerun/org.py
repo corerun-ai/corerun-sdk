@@ -545,3 +545,40 @@ def set_audit_export_enabled(ref: str, enabled: bool) -> Dict[str, Any]:
 
 def remove_audit_export(ref: str) -> Dict[str, Any]:
     return get_client().delete(f"/tenant/audit/exports/{_export_id(ref)}")
+
+
+#: The fields of the organisation's agent sandbox settings.
+AGENT_SETTING_FIELDS = ("default_idle_minutes", "max_idle_minutes", "max_ready_per_agent", "ready_per_organization")
+
+
+def agent_settings() -> Dict[str, Any]:
+    """
+    How the organisation's agents hold sandboxes: ``default_idle_minutes``
+    (0: the installation's), ``max_idle_minutes`` (0: no limit),
+    ``max_ready_per_agent`` (None: five), ``ready_per_organization`` (None:
+    the installation's), and ``installation`` -- the installation's own
+    values and ceilings. Each agent's manager may only tighten these.
+    """
+    return get_client().get("/tenant/agent-settings")
+
+
+def set_agent_settings(
+    default_idle_minutes: int = 0,
+    max_idle_minutes: int = 0,
+    max_ready_per_agent: Optional[int] = None,
+    ready_per_organization: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Replace the organisation's agent sandbox settings (every field; read
+    them first to change one). Anything the installation does not allow is
+    refused, naming its limit.
+    """
+    return get_client().put(
+        "/tenant/agent-settings",
+        json={
+            "default_idle_minutes": default_idle_minutes,
+            "max_idle_minutes": max_idle_minutes,
+            "max_ready_per_agent": max_ready_per_agent,
+            "ready_per_organization": ready_per_organization,
+        },
+    )

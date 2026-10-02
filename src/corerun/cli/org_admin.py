@@ -25,6 +25,7 @@ accounts_app = typer.Typer(help="Service accounts: machines that act for the org
 license_app = typer.Typer(help="The installation's licence")
 quota_app = typer.Typer(help="Each workspace's own limits, under the plan's")
 git_app = typer.Typer(help="Git hosts every workspace's jobs may clone from")
+agents_app = typer.Typer(help="How the organisation's agents hold sandboxes: idle time and ready sandboxes")
 
 
 def register(app: typer.Typer) -> None:
@@ -38,6 +39,7 @@ def register(app: typer.Typer) -> None:
     app.add_typer(license_app, name="license")
     app.add_typer(quota_app, name="quota")
     app.add_typer(git_app, name="git")
+    app.add_typer(agents_app, name="agents")
 
 
 def _org():
@@ -802,3 +804,75 @@ def git_remove(connection: str = typer.Argument(...), yes: bool = typer.Option(F
     org = _org()
     answer = _do(org.remove_git_connection, connection)
     output.emit(answer, lambda: console.print(f"[green]Removed[/green] {connection}"))
+
+
+# ── agent sandboxes ─────────────────────────────────────────────────────────
+
+
+def _minutes(n: int) -> str:
+    return f"{n} min" if n < 60 else f"{n // 60} h" + (f" {n % 60} min" if n % 60 else "")
+
+
+@agents_app.command("show")
+def agents_show():
+    """
+    How the organisation's agents hold sandboxes, beside the installation's.
+
+    Example:
+        corerun org agents show
+    """
+    org = _org()
+    s = _do(org.agent_settings)
+    inst = s.get("installation") or {}
+
+    def render():
+        t = Table(title="Agent sandboxes")
+        t.add_column("Setting")
+        t.add_column("Organisation")
+        t.add_column("Installation")
+        d, m = s.get("default_idle_minutes") or 0, s.get("max_idle_minutes") or 0
+        t.add_row("Stop when unused, by default", _minutes(d) if d else "installation's", _minutes(inst.get("idle_minutes", 10)))
+        t.add_row("Longest allowed", _minutes(m) if m else "no limit", _minutes(inst.get("max_idle_minutes", 240)))
+        rpa, rpo = s.get("max_ready_per_agent"), s.get("ready_per_organization")
+        t.add_row("Ready sandboxes per agent, at most", str(rpa) if rpa is not None else "default", str(inst.get("max_ready_per_agent", 5)))
+        t.add_row("Ready sandboxes for the organisation, at most", str(rpo) if rpo is not None else "installation's", str(inst.get("ready_per_organization", 10)))
+        console.print(t)
+        console.print("[dim]Whoever manages an agent may only tighten these.[/dim]")
+
+    output.emit(s, render)
+
+
+@agents_app.command("set")
+def agents_set(
+    idle_default: Optional[int] = typer.Option(None, "--idle-default", help="Minutes; 0: the installation's"),
+    idle_max: Optional[int] = typer.Option(None, "--idle-max", help="Minutes (5-240); 0: no limit"),
+    ready_per_agent: Optional[int] = typer.Option(None, "--ready-per-agent", help="0-5; -1: the default (5)"),
+    ready_per_org: Optional[int] = typer.Option(None, "--ready-per-org", help="Up to the installation's; -1: the installation's"),
+):
+    """
+    Change how the organisation's agents hold sandboxes. Only what is named
+    changes; anything above the installation's limits is refused.
+
+    Example:
+        corerun org agents set --idle-default 15 --idle-max 60
+        corerun org agents set --ready-per-agent 2 --ready-per-org 6
+        corerun org agents set --ready-per-org -1
+    """
+    if all(v is None for v in (idle_default, idle_max, ready_per_agent, ready_per_org)):
+        raise output.fail("name at least one setting (corerun org agents set --help)")
+    org = _org()
+    current = _do(org.agent_settings)
+
+    def keep(new, field):
+        if new is None:
+            return current.get(field)
+        return None if new < 0 else new
+
+    s = _do(
+        org.set_agent_settings,
+        default_idle_minutes=idle_default if idle_default is not None else current.get("default_idle_minutes") or 0,
+        max_idle_minutes=idle_max if idle_max is not None else current.get("max_idle_minutes") or 0,
+        max_ready_per_agent=keep(ready_per_agent, "max_ready_per_agent"),
+        ready_per_organization=keep(ready_per_org, "ready_per_organization"),
+    )
+    output.emit(s, lambda: console.print("[green]Saved.[/green] corerun org agents show for the result."))
