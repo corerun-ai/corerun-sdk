@@ -125,7 +125,15 @@ corerun policies get careful > careful.yaml
 corerun policies create careful -f careful.yaml     # a workspace's: a workspace admin
 corerun policies update careful --disable
 corerun policies delete careful --yes
+
+corerun policies try "kubectl delete deploy api -n prod" --agent <agent>       # what would be decided, nothing runs
+corerun policies try "kubectl rollout restart deploy api -n prod" --agent <agent> -f rules.yaml   # with unsaved rules
 ```
+
+Before saving a rule, and when an agent says it was refused, run
+`policies try` with the command it tried: it names the level, policy and rule
+that decided -- a refusal from the organisation's policy needs an organisation
+administrator, not a looser agent rule.
 
 Loosening is the human's decision: ask before turning an `ask` into `allow`, or
 adding any write. A rule from a higher level cannot be loosened by a lower one,

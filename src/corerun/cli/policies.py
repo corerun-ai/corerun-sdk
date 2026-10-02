@@ -183,3 +183,93 @@ def delete_policy(
     except Exception as e:
         raise output.fail(str(e))
     output.emit({"deleted": p.id}, lambda: console.print(f"Removed {p.name}."))
+
+
+_EFFECT_WORDS = {"allow": "[green]Allowed[/green]", "ask": "[yellow]Asked first[/yellow]", "deny": "[red]Refused[/red]"}
+
+
+def _layer_words(layer: str) -> str:
+    if layer == "floor":
+        return "the platform's floor"
+    if layer == "policy":
+        return "no rule allows it"
+    if layer in ("agent", "agent:default"):
+        return "the agent's own rules" if layer == "agent" else "the agent's default (read only)"
+    kind, _, name = layer.partition(":")
+    return f"the {'organisation' if kind == 'organization' else kind}'s policy “{name}”" if name else layer
+
+
+@app.command("try")
+def try_command(
+    command: str = typer.Argument(..., help='A kubectl or helm command, quoted: "kubectl delete deploy api -n prod"'),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Decide as this agent's request (name or id)"),
+    connector: Optional[str] = typer.Option(None, "--connector", "-c", help="Which of the agent's clusters (when it has several)"),
+    file: Optional[Path] = typer.Option(
+        None, "--file", "-f", exists=True, dir_okay=False,
+        help="Unsaved rules (YAML) to try: the agent's own with --agent, else a new workspace policy",
+    ),
+):
+    """
+    What a policy would decide for a command, without running it.
+
+    The platform's policy engine decides, with every rule that applies --
+    the organisation's, the workspace's, the agent's own with --agent, and
+    the platform's floor. Nothing is sent to a cluster.
+
+    Example:
+        corerun policies try "kubectl delete deploy api -n prod" --agent sre
+        corerun policies try "kubectl scale deploy web --replicas 3 -n dev" -f careful.yaml
+    """
+    import corerun.kubectl as kubectl
+
+    try:
+        request, note = kubectl.parse(command)
+    except kubectl.ParseError as e:
+        raise output.fail(str(e))
+    draft_rules = _rules(file) if file else None
+    _init_client()
+    import corerun.policies as policies
+
+    try:
+        if agent:
+            import corerun.agents as agents
+            import corerun.connectors as connectors
+            from corerun.cli import resolve
+
+            agent_id = resolve.by_name_or_id(agent, lambda: agents.list(), "agent")
+            given = [t["connector"] for t in agents.tools(agent_id) if t.get("enabled") and (t.get("connector") or {}).get("kind") == "kubernetes"]
+            if connector:
+                c = connectors.find(connector)
+                connector_id = c.id
+            elif len(given) == 1:
+                connector_id = given[0]["id"]
+            elif not given:
+                raise output.fail(f"{agent} is given no Kubernetes cluster; nothing it runs reaches one")
+            else:
+                raise output.fail("it has several clusters; name one with --connector: " + ", ".join(g["name"] for g in given))
+            result = policies.explain(
+                request, agent_id=agent_id, connector_id=connector_id,
+                draft={"policy": "agent", "rules": draft_rules} if draft_rules is not None else None,
+            )
+        else:
+            rules = []
+            for p in policies.list():
+                if p.enabled and p.level in ("organization", "workspace"):
+                    rules += [dict(r, policy=f"{p.level}:{p.name}") for r in p.rules]
+            if draft_rules is not None:
+                rules += [dict(r, policy="workspace:draft") for r in draft_rules]
+            result = policies.explain(request, rules=rules)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        raise output.fail(str(e))
+
+    def render():
+        console.print(f"The request: {kubectl.describe(request)}" + (f" [dim]({note})[/dim]" if note else ""))
+        rule = f", rule “{result.get('rule')}”" if result.get("rule") else ""
+        console.print(f"{_EFFECT_WORDS.get(result.get('effect'), result.get('effect'))} -- decided by {_layer_words(result.get('layer', ''))}{rule}")
+        if result.get("message"):
+            console.print(f"  {result['message']}")
+        console.print("[dim]Nothing was sent to a cluster.[/dim]")
+
+    output.emit({"request": request, "note": note, **result}, render)

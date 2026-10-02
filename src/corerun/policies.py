@@ -146,3 +146,39 @@ def _check_fields(match: Dict[str, Any], where: str) -> None:
             raise ValueError(f"{where}: unknown field {field!r} (one of {', '.join(FIELDS)})")
         if not isinstance(globs, builtins.list) or not globs:
             raise ValueError(f"{where}: {field} needs a list of at least one glob")
+
+
+def explain(
+    request: Dict[str, Any],
+    *,
+    agent_id: Optional[str] = None,
+    connector_id: Optional[str] = None,
+    rules: Optional[List[Dict[str, Any]]] = None,
+    draft: Optional[Dict[str, Any]] = None,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    What the platform's policy engine would decide for a request, without
+    sending anything to a cluster: ``{effect, rule, layer, message}``.
+
+    With ``agent_id`` and ``connector_id`` the rules are the ones a real request
+    from that agent would meet (organisation, workspace, the agent's own, the
+    platform's floor). Otherwise ``rules`` -- each labelled with its ``policy``
+    (``organization:<name>``, ``workspace:<name>``, ``agent``) -- are used. A
+    ``draft`` ``{policy, rules}`` replaces that policy's rules: unsaved edits.
+
+    ``request`` is ``{action, group, resource, subresource, namespace, name}``;
+    ``corerun.kubectl.parse`` makes one from a command line.
+
+    Example:
+        request, _ = corerun.kubectl.parse("kubectl delete deploy api -n prod")
+        corerun.policies.explain(request, agent_id=a, connector_id=c)
+    """
+    body: Dict[str, Any] = {"request": request}
+    if agent_id or connector_id:
+        body["agent_id"], body["connector_id"] = agent_id, connector_id
+    if rules is not None:
+        body["rules"] = rules
+    if draft is not None:
+        body["draft"] = draft
+    return get_client().post("/toolgate/explain", json=body, workspace=workspace) or {}
