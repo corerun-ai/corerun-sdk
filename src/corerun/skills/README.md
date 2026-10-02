@@ -78,7 +78,7 @@ direction only: anything committed there by hand is overwritten.
 This directory is the only copy. The CLI reads it from inside its own package,
 and the notebook image installs it through the CLI, so a change here reaches
 everyone on their next `pip install` and a notebook on its next image build —
-see `images/agent-notebook/build.sh`.
+see `images/build.sh`.
 
 Each skill is a directory with a `SKILL.md` whose front matter carries its name
 and the description an agent matches against. Two rules worth keeping when

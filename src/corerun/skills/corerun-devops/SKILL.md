@@ -168,6 +168,45 @@ A remote cluster needs this install's public address for its operator
 (`wss://<domain>/operators`). If an operator never connects, check that
 address from the remote side first.
 
+### Keeping operators up to date
+
+After the platform is upgraded, a host's operator is behind it until the
+host's administrator updates it -- the platform never changes a host itself.
+`corerun clusters list` marks such a host *update available*, and
+`corerun clusters get <host>` gives the running and the platform's version
+and the command, which the host's administrator runs on the host:
+
+```bash
+sudo corerun-host-operator upgrade
+```
+
+It fetches the operator this install serves, checks it against the published
+checksum, keeps the old binary beside it and restarts; the host's notebooks,
+jobs and endpoints keep running. An operator older than that command answers
+*unknown command* or asks for `CLUSTER_NAME`: the installer, once, then a
+restart. A Kubernetes cluster's operator follows the chart: `helm upgrade`
+of the cluster-operator chart there.
+
+## Versions and releases
+
+One version for everything corerun ships together -- the API, the operators,
+the console, the CLI, the chart and the docs -- in semantic versioning:
+**major** needs more than `helm upgrade` (values, the API, the operator
+protocol, the database) and its release notes say what; **minor** adds
+features; **patch** only fixes. `0.4.0-rc.1` is a release under test;
+`0.4.0-dev.1305.g899732f5` a development build on the way to 0.4.0.
+
+```bash
+curl -s https://<domain>/api/v1/health     # {"status":"healthy","version":"v0.4.0"}
+corerun version                            # the CLI's version, and the platform's
+```
+
+The chart installs its own release's images and docs: `--version <chart
+version>` is the whole choice. Before an upgrade, read the release notes of
+every release between -- `https://<domain>/docs/releases/` on the install,
+their **Upgrade notes** above all -- then back up, and upgrade from a values
+file rather than `--reuse-values`.
+
 ## Upgrading
 
 ```bash

@@ -26,6 +26,19 @@ class ValidationError(CoreRunError):
     pass
 
 
+class ConflictError(CoreRunError):
+    """The request conflicts with the resource's state (409).
+
+    ``code`` is the platform's name for the conflict -- ``restart_required``
+    when a running notebook cannot change what it mounts -- so a caller can
+    act on it rather than on the wording.
+    """
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
+
+
 class RateLimitError(CoreRunError):
     """Rate limit exceeded (429)"""
     pass

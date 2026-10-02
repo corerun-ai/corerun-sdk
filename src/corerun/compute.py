@@ -23,6 +23,11 @@ class ComputeTarget(BaseModel):
     scope: str = ""
     config: Dict[str, Any] = Field(default_factory=dict)
     tags: Dict[str, str] = Field(default_factory=dict)
+    # GPUs its operator found, and what they are; absent without any.
+    gpus: int = 0
+    gpu_model: Optional[str] = None
+    # A host whose operator is behind the platform's version.
+    operator_update_available: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

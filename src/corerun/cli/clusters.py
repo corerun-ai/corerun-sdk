@@ -90,6 +90,8 @@ def list_clusters(
 
     for c in items:
         operator = "[green]connected[/]" if c.operator_connected else "[dim]offline[/]"
+        if c.operator_update_available:
+            operator += " [yellow]update available[/]"
         nodes = str(c.resources.node_count) if c.resources else "-"
         if c.resources and c.resources.total_gpus:
             gpus = f"{c.resources.allocated_gpus}/{c.resources.total_gpus}"
@@ -143,7 +145,13 @@ def get_cluster(
     console.print(f"  Scope:        {c.scope or '-'}")
     console.print(f"  Architecture: {c.architecture or '-'}")
     console.print(f"  GPU strategy: {c.gpu_strategy or '-'}")
-    console.print(f"  Operator:    {'connected' if c.operator_connected else 'offline'}")
+    console.print(f"  Operator:    {'connected' if c.operator_connected else 'offline'}"
+                  + (f" ({c.operator_version})" if c.operator_version else ""))
+    if c.operator_update_available:
+        console.print(
+            f"  [yellow]Update available[/yellow]: the platform is {c.operator_latest or 'newer'}. On the host, run:\n"
+            "    sudo corerun-host-operator upgrade"
+        )
 
     if not c.resources:
         console.print("\n[dim]No resource data — the operator has not reported in.[/]")

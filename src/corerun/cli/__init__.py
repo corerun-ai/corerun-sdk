@@ -205,6 +205,16 @@ def version():
     """
     from corerun import __version__
     console.print(f"corerun version {__version__}")
+    # The platform the CLI talks to, when it can be reached: one version for
+    # everything it ships, so a CLI far from it is worth knowing about.
+    try:
+        from corerun.config import get_client
+
+        platform = get_client().get("/health").get("version")
+    except Exception:
+        platform = None
+    if platform:
+        console.print(f"platform {platform}")
 
 
 if __name__ == "__main__":

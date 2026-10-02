@@ -43,9 +43,18 @@ def _status_style(status: str) -> str:
     return styles.get(status, "white")
 
 
-def _type_label(notebook_type: str) -> str:
-    # What the product calls them, so the CLI and the page agree.
-    return {"jupyter": "Notebook", "code-server": "Code Editor"}.get(notebook_type, notebook_type)
+def _apps(url: str) -> dict:
+    # What a notebook opens beside JupyterLab, served by its Jupyter under the
+    # same address -- the console's Open menu lists the same three.
+    base = url.split("?")[0]
+    if base.endswith("/lab"):
+        base = base[: -len("lab")]
+    elif not base.endswith("/"):
+        base += "/"
+    return {
+        "JupyterLab": base + "lab",
+        "VS Code": base + "vscode/",
+    }
 
 
 def _fail(e: Exception) -> "typer.Exit":
@@ -151,7 +160,6 @@ def list_notebooks(
 
     table = Table(title="Notebooks")
     table.add_column("Name", style="cyan", no_wrap=True)
-    table.add_column("Type", no_wrap=True)
     table.add_column("Status", no_wrap=True)
     table.add_column("Compute", no_wrap=True)
     table.add_column("GPU", justify="right")
@@ -160,7 +168,6 @@ def list_notebooks(
     for n in found:
         table.add_row(
             n.name,
-            _type_label(n.notebook_type),
             f"[{_status_style(n.status)}]{n.status}[/]",
             n.compute_name or "-",
             str(int(n.gpu)) if n.gpu else "-",
@@ -201,14 +208,21 @@ def get_notebook(
 
     console.print(f"[bold cyan]{n.name}[/]  [dim]{n.id}[/]")
     console.print(f"  Status:   [{_status_style(n.status)}]{n.status}[/]")
-    console.print(f"  Type:     {_type_label(n.notebook_type)}")
     console.print(f"  Compute:  {n.compute_name or '-'}")
     console.print(f"  Image:    {n.image or '-'}")
     console.print(f"  GPUs:     {int(n.gpu) if n.gpu else 'none'}")
     if n.datasets:
         console.print(f"  Datasets: {', '.join(n.datasets)}")
     if n.url:
-        console.print(f"  URL:      {_absolute(n.url)}", soft_wrap=True)
+        for app, address in _apps(_absolute(n.url)).items():
+            console.print(f"  {app + ':':<12}{address}", soft_wrap=True)
+    if n.home_location:
+        home = "kept in the workspace" if n.home_location == "store" else "this compute's own disk (not kept)"
+        console.print(f"  Home:     {home}")
+    if n.progress:
+        console.print(f"  Now:      {n.progress}")
+    if n.warning:
+        console.print(f"  [yellow]Warning:[/yellow]  {n.warning}")
     if n.error:
         console.print(f"  [red]Error:[/red]    {n.error}")
 
@@ -217,7 +231,6 @@ def get_notebook(
 def create_notebook(
     name: Optional[str] = typer.Argument(None, help="Notebook name; generated if omitted"),
     compute: str = typer.Option(..., "--compute", "-c", help="Compute target to run on"),
-    type_: str = typer.Option("jupyter", "--type", "-t", help="jupyter or code-server"),
     gpu: float = typer.Option(0, "--gpu", "-g", help="GPUs to request"),
     image: Optional[str] = typer.Option(None, "--image", "-i", help="Override the default image"),
     profile: Optional[str] = typer.Option(None, "--profile", "-p", help="Resource profile (Kubernetes)"),
@@ -233,7 +246,7 @@ def create_notebook(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """
-    Create a notebook.
+    Create a notebook. It is JupyterLab, and VS Code opens from it: `corerun notebooks get` prints where.
 
     Example:
         corerun notebooks create --compute gb10dgx01-host
@@ -258,7 +271,6 @@ def create_notebook(
         n = notebooks.create(
             name=name,
             compute_name=compute,
-            notebook_type=type_,
             image=image,
             gpu=gpu,
             profile=profile,
@@ -330,10 +342,11 @@ def wait_notebook(
 def _absolute(url: str) -> str:
     """Make a notebook's address openable.
 
-    The platform returns a path — /clusters/<cluster>/notebook/<id>/lab?token=…
-    — because it is proxied at the origin rather than under the API prefix. A
+    The platform returns a path — /clusters/<cluster>/notebook/<id>/lab —
+    because it is proxied at the origin rather than under the API prefix. A
     path cannot be opened or clicked, so the origin goes back on: the API URL
-    with its /api/v… suffix removed.
+    with its /api/v… suffix removed. It carries no token; the hub adds it for
+    whoever is signed in and may open the notebook.
     """
     if url.startswith(("http://", "https://")):
         return url
@@ -469,13 +482,23 @@ def stop_notebook(
 @app.command("start")
 def start_notebook(
     notebook_id: str = typer.Argument(..., metavar="NOTEBOOK", help="Notebook name or ID"),
+    compute: Optional[str] = typer.Option(
+        None, "--compute", "-c", help="Start it on this compute instead; its files follow it"
+    ),
+    gpu: Optional[float] = typer.Option(
+        None, "--gpu", help="GPUs to have (0 for none): the GPU image with, the CPU image without"
+    ),
+    profile: Optional[str] = typer.Option(None, "--profile", help="Resource profile of the compute"),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
 ):
     """
-    Start a stopped notebook.
+    Start a stopped notebook: where it ran, on other compute, or with or
+    without its compute's GPU.
 
-    Example:
+    Examples:
         corerun notebooks start abc123
+        corerun notebooks start abc123 --compute gb10-edge-host
+        corerun notebooks start abc123 --gpu 1
     """
     _init_client()
 
@@ -484,11 +507,183 @@ def start_notebook(
     resolved = _resolve(notebook_id, workspace)
 
     try:
-        n = notebooks.start(resolved, workspace=workspace)
+        n = notebooks.start(resolved, workspace=workspace, compute=compute, gpu=gpu, profile=profile)
     except Exception as e:
         raise _fail(e)
 
-    console.print(f"[green]Starting[/green] {n.name}")
+    where = f" on {n.compute_name}" if n.compute_name else ""
+    gpus = f" with {int(n.gpu)} GPU{'s' if n.gpu != 1 else ''}" if n.gpu else ""
+    console.print(f"[green]Starting[/green] {n.name}{where}{gpus}")
+
+
+@app.command("datasets")
+def notebook_datasets(
+    notebook_id: str = typer.Argument(..., metavar="NOTEBOOK", help="Notebook name or ID"),
+    add: Optional[List[str]] = typer.Option(
+        None, "--add", "-a", help="Dataset to mount; repeatable"
+    ),
+    remove: Optional[List[str]] = typer.Option(
+        None, "--remove", "-r", help="Dataset to unmount; repeatable"
+    ),
+    restart: bool = typer.Option(
+        False, "--restart",
+        help="Where the notebook cannot change them while it runs, restart it with them",
+    ),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Show or change the datasets a notebook mounts (read-only, at /data/<name>).
+
+    On a host they change while it runs. On a Kubernetes cluster the notebook
+    restarts to change them: --restart does that, and without it nothing is
+    changed. A stopped notebook gets them when it starts.
+
+    Example:
+        corerun notebooks datasets my-nb
+        corerun notebooks datasets my-nb --add mnist --add reviews
+        corerun notebooks datasets my-nb --remove mnist --restart
+    """
+    _init_client()
+
+    import corerun.notebooks as notebooks
+    from corerun.exceptions import ConflictError
+
+    if json_output:
+        output.set_json(True)
+    resolved = _resolve(notebook_id, workspace)
+    try:
+        current = notebooks.get(resolved, workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+
+    if not add and not remove:
+        if output.json_mode():
+            output.emit({"notebook": current.name, "datasets": current.datasets})
+            return
+        if not current.datasets:
+            console.print(
+                f"{current.name} mounts no datasets. Add one: "
+                f"corerun notebooks datasets {current.name} --add <dataset>"
+            )
+            return
+        for name in current.datasets:
+            console.print(f"  {name}  [dim]/data/{name}[/dim]")
+        return
+
+    wanted = [d for d in current.datasets if d not in (remove or [])]
+    wanted += [d for d in (add or []) if d not in wanted]
+
+    try:
+        try:
+            result = notebooks.set_datasets(resolved, wanted, workspace=workspace)
+        except ConflictError as e:
+            if e.code != "restart_required":
+                raise
+            if not restart:
+                raise _fail(f"{e} Run again with --restart to restart {current.name} with them.")
+            notebooks.set_datasets(resolved, wanted, next_start=True, workspace=workspace)
+            notebooks.stop(resolved, workspace=workspace)
+            notebooks.start(resolved, workspace=workspace)
+            result = {"applied": "restart", "datasets": wanted}
+    except typer.Exit:
+        raise
+    except Exception as e:
+        raise _fail(e)
+
+    if output.json_mode():
+        output.emit(result)
+        return
+    said = {
+        "live": "mounted now",
+        "restart": "restarting with them",
+        "next_start": "mounted when it starts",
+    }.get(result.get("applied", ""), "recorded")
+    console.print(f"{current.name}: {', '.join(wanted) or 'no datasets'} ({said})")
+
+
+@app.command("files")
+def list_files(
+    notebook_id: str = typer.Argument(..., metavar="NOTEBOOK", help="Notebook name or ID"),
+    path: str = typer.Argument("", help="Folder within the notebook's workspace folder"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    List a stopped notebook's files, as kept in the workspace's storage.
+
+    A running notebook's files are its server's: open it. A home on a
+    compute's own disk is not kept in storage, and this says so.
+
+    Example:
+        corerun notebooks files abc123 experiments
+    """
+    _init_client()
+
+    import corerun.notebooks as notebooks
+
+    resolved = _resolve(notebook_id, workspace)
+    try:
+        listing = notebooks.files(resolved, path, workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+
+    if json_output:
+        output.set_json(True)
+    if output.json_mode():
+        output.emit(listing)
+        return
+    if not listing.get("available"):
+        console.print(
+            "[yellow]These files are not kept in the workspace's storage[/yellow]: the notebook's home is "
+            "on its compute's own disk. Start the notebook to see them."
+        )
+        raise typer.Exit(1)
+    entries = listing.get("entries") or []
+    if not entries:
+        console.print("[dim]Nothing here.[/dim]")
+        return
+    for e in entries:
+        mark = "/" if e.get("type") == "directory" else ""
+        size = f"  [dim]{e['size']} B[/dim]" if e.get("size") else ""
+        console.print(f"  {e.get('path') or e.get('name')}{mark}{size}")
+
+
+@app.command("cat")
+def show_notebook_file(
+    notebook_id: str = typer.Argument(..., metavar="NOTEBOOK", help="Notebook name or ID"),
+    path: str = typer.Argument(..., help="The .ipynb within the notebook's workspace folder"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="The notebook's JSON, as saved"),
+):
+    """
+    Show one of a stopped notebook's .ipynb files, as last saved: each cell's
+    source, in order.
+
+    Example:
+        corerun notebooks cat abc123 train.ipynb
+    """
+    _init_client()
+
+    import corerun.notebooks as notebooks
+
+    resolved = _resolve(notebook_id, workspace)
+    try:
+        nb = notebooks.read_notebook_file(resolved, path, workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+
+    if json_output:
+        output.set_json(True)
+    if output.json_mode():
+        output.emit(nb)
+        return
+    for i, cell in enumerate(nb.get("cells") or [], 1):
+        source = cell.get("source") or ""
+        if isinstance(source, list):
+            source = "".join(source)
+        console.print(f"[dim]── [{i}] {cell.get('cell_type', 'cell')}[/dim]")
+        console.print(source, markup=False, highlight=False)
 
 
 @app.command("delete")

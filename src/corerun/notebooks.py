@@ -51,7 +51,6 @@ class Notebook(BaseModel):
 
     id: str
     name: str
-    notebook_type: str  # jupyter, code-server
     status: str  # pending, running, stopped, failed
     compute_name: str
     cluster_id: Optional[str] = None
@@ -68,6 +67,15 @@ class Notebook(BaseModel):
     owner_id: str
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # What a start is doing now ("Pulling the image: 45%"), as the compute
+    # reports it; empty once it has settled.
+    progress: Optional[str] = None
+    # A problem the notebook came up with anyway -- its home could not be
+    # mounted from storage, most often.
+    warning: Optional[str] = None
+    # Where the running notebook's home is: "store" (kept in the workspace's
+    # storage) or "disk" (the compute's own; not kept).
+    home_location: Optional[str] = None
 
     @property
     def is_running(self) -> bool:
@@ -95,7 +103,7 @@ class Notebook(BaseModel):
         return [] if v is None else v
 
     def __repr__(self) -> str:
-        return f"Notebook(name='{self.name}', type='{self.notebook_type}', status='{self.status}')"
+        return f"Notebook(name='{self.name}', status='{self.status}')"
 
 
 class CreateNotebookEnvVarRequest(BaseModel):
@@ -109,7 +117,6 @@ class CreateNotebookEnvVarRequest(BaseModel):
 class CreateNotebookRequest(BaseModel):
     """Request to create a notebook."""
     name: str
-    notebook_type: str = "jupyter"  # jupyter, code-server
     compute_name: str
     cluster_id: Optional[str] = None
     image: Optional[str] = None
@@ -131,7 +138,6 @@ def _notebook_from_response(data: dict) -> Notebook:
     return Notebook(
         id=data.get("id", ""),
         name=data.get("name", ""),
-        notebook_type=data.get("notebook_type", "jupyter"),
         status=data.get("status", "pending"),
         compute_name=data.get("compute_name", ""),
         cluster_id=data.get("cluster_id"),
@@ -148,6 +154,9 @@ def _notebook_from_response(data: dict) -> Notebook:
         owner_id=data.get("owner_id", ""),
         created_at=data.get("created_at"),
         updated_at=data.get("updated_at"),
+        progress=data.get("progress"),
+        warning=data.get("warning"),
+        home_location=data.get("home_location"),
     )
 
 
@@ -205,7 +214,6 @@ def get(notebook_id: str, workspace: Optional[str] = None) -> Notebook:
 def create(
     name: str,
     compute_name: str,
-    notebook_type: str = "jupyter",
     image: Optional[str] = None,
     gpu: float = 0,
     profile: Optional[str] = None,
@@ -221,11 +229,13 @@ def create(
     """
     Create a new notebook session.
 
+    A notebook is JupyterLab; VS Code opens from it, at <url>/vscode/, so
+    there is no type to choose.
+
     Args:
         name: Notebook name
         compute_name: Compute target name (cluster)
-        notebook_type: Type of notebook ("jupyter" or "code-server")
-        image: Docker image (uses default for notebook type if not specified)
+        image: Docker image (the platform's notebook image if not specified)
         gpu: Number of GPUs (0 for CPU-only)
         profile: Resource profile name from cluster
         datasets: List of dataset names to mount
@@ -249,11 +259,10 @@ def create(
             datasets=["mnist"],
         )
 
-        # Create a VSCode notebook with custom env vars
+        # With custom env vars
         notebook = corerun.notebooks.create(
             name="dev-environment",
             compute_name="dgx-cluster",
-            notebook_type="code-server",
             gpu=1,
             custom_env_vars=[
                 {"name": "DEBUG", "value": "1"},
@@ -281,7 +290,6 @@ def create(
 
     request = CreateNotebookRequest(
         name=name,
-        notebook_type=notebook_type,
         compute_name=compute_name,
         image=image,
         gpu=gpu,
@@ -325,23 +333,75 @@ def stop(notebook_id: str, workspace: Optional[str] = None) -> Notebook:
     return _notebook_from_response(response)
 
 
-def start(notebook_id: str, workspace: Optional[str] = None) -> Notebook:
+def start(
+    notebook_id: str,
+    workspace: Optional[str] = None,
+    compute: Optional[str] = None,
+    gpu: Optional[float] = None,
+    profile: Optional[str] = None,
+) -> Notebook:
     """
-    Start a stopped notebook.
+    Start a stopped notebook -- where it ran, or somewhere else.
 
     Args:
         notebook_id: Notebook ID
         workspace: Workspace ID (uses default if not specified)
+        compute: Start it on this compute target instead. Its files are in
+            the person's home, which follows it.
+        gpu: GPUs it should have, on whichever compute. With GPUs it runs the
+            GPU image, without them the CPU one; the platform picks the image
+            that fits the card.
+        profile: A resource profile of the (new) compute.
 
     Returns:
         Updated Notebook object
 
     Example:
-        notebook = corerun.notebooks.start("abc123")
+        corerun.notebooks.start("abc123")
+        corerun.notebooks.start("abc123", compute="gb10-edge-host", gpu=1)
     """
     client = get_client()
-    response = client.post(f"/notebooks/{notebook_id}/start", workspace=workspace)
+    body: dict = {}
+    if compute:
+        body["compute_name"] = compute
+    if gpu is not None:
+        body["gpu"] = gpu
+        # The API reads a change of GPUs through its compute choice.
+        body.setdefault("compute_name", get(notebook_id, workspace=workspace).compute_name)
+    if profile is not None:
+        body["profile"] = profile
+    response = client.post(f"/notebooks/{notebook_id}/start", json=body or None, workspace=workspace)
     return _notebook_from_response(response)
+
+
+def set_datasets(
+    notebook_id: str,
+    datasets: List[str],
+    next_start: bool = False,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Make a notebook's datasets exactly these, mounted read-only.
+
+    On a running notebook on a host they change at once. Elsewhere -- a
+    Kubernetes cluster, or a host whose connector predates this -- the
+    notebook has to restart to change them: that raises ConflictError with
+    ``code == "restart_required"``, and ``next_start=True`` records them for
+    the next start instead (then stop() and start() it). A stopped notebook
+    gets them when it starts.
+
+    Returns:
+        {"applied": "live" | "next_start", "datasets": [...]}
+
+    Example:
+        corerun.notebooks.set_datasets("abc123", ["mnist", "reviews"])
+    """
+    client = get_client()
+    return client.put(
+        f"/notebooks/{notebook_id}/datasets",
+        json={"datasets": [*datasets], "next_start": next_start},
+        workspace=workspace,
+    )
 
 
 def set_visibility(
@@ -498,7 +558,6 @@ def get_url(notebook_id: str, workspace: Optional[str] = None) -> Optional[str]:
 def open(
     name: str,
     compute_name: str,
-    notebook_type: str = "jupyter",
     image: Optional[str] = None,
     gpu: float = 0,
     profile: Optional[str] = None,
@@ -513,7 +572,6 @@ def open(
     Args:
         name: Notebook name
         compute_name: Compute target name
-        notebook_type: Type of notebook ("jupyter" or "code-server")
         image: Docker image
         gpu: Number of GPUs
         profile: Resource profile name
@@ -534,7 +592,6 @@ def open(
     return create(
         name=name,
         compute_name=compute_name,
-        notebook_type=notebook_type,
         image=image,
         gpu=gpu,
         profile=profile,
@@ -542,3 +599,33 @@ def open(
         wait=True,
         workspace=workspace,
     )
+
+
+def files(notebook_id: str, path: str = "", workspace: Optional[str] = None) -> dict:
+    """
+    List a stopped notebook's files, as kept in the workspace's storage.
+
+    Answers ``{"available": bool, "path": str, "entries": [...]}``; each entry
+    has ``name``, ``path``, ``type`` (directory, notebook or file), ``size``
+    and ``last_modified``. ``available`` is false when the notebook's home is
+    not kept in object storage (a host's own disk, a volume): then only the
+    running notebook can read them.
+
+    Example:
+        corerun.notebooks.files("abc123", "experiments")
+    """
+    client = get_client()
+    return client.get(f"/notebooks/{notebook_id}/files", params={"path": path}, workspace=workspace)
+
+
+def read_notebook_file(notebook_id: str, path: str, workspace: Optional[str] = None) -> dict:
+    """
+    Read one .ipynb from a stopped notebook's files, as last saved: the
+    notebook's JSON (nbformat), read-only.
+
+    Example:
+        nb = corerun.notebooks.read_notebook_file("abc123", "train.ipynb")
+        for cell in nb["cells"]: print(cell["cell_type"], "".join(cell["source"]))
+    """
+    client = get_client()
+    return client.get(f"/notebooks/{notebook_id}/files/content", params={"path": path}, workspace=workspace)

@@ -68,13 +68,8 @@ Notebooks:
     notebook = corerun.notebooks.wait_for_running(notebook.id)
     print(f"Open: {notebook.url}")
 
-    # Create VSCode notebook
-    notebook = corerun.notebooks.create(
-        name="dev-env",
-        notebook_type="code-server",
-        compute_name="dgx-cluster",
-        gpu=1,
-    )
+    # Every notebook is JupyterLab; VS Code opens from it at
+    # <notebook url>/vscode/.
 
     # Stop/start/delete
     corerun.notebooks.stop(notebook.id)

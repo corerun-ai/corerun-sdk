@@ -70,6 +70,11 @@ class Cluster(BaseModel):
     scope: str = ""
     initialized: bool = False
     operator_connected: bool = False
+    # The operator's version, and whether it is behind the platform's: the
+    # host's owner then runs `sudo corerun-host-operator upgrade` there.
+    operator_version: Optional[str] = None
+    operator_update_available: bool = False
+    operator_latest: Optional[str] = None
     gpu_strategy: str = ""
     architecture: Optional[str] = None
     cluster_type: Optional[str] = None

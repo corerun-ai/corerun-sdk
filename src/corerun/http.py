@@ -12,6 +12,7 @@ from typing import Any
 
 from .exceptions import (
     AuthenticationError,
+    ConflictError,
     CoreRunError,
     NotFoundError,
     RateLimitError,
@@ -118,6 +119,15 @@ def decode_response(response, *, as_text: bool = False) -> Any:
         raise NotFoundError(detail)
     if status in (400, 422):
         raise ValidationError(detail)
+    if status == 409:
+        code = ""
+        try:
+            body = response.json()
+            if isinstance(body, dict) and isinstance(body.get("error"), str):
+                code = body["error"]
+        except Exception:
+            pass
+        raise ConflictError(detail, code=code)
     if status == 429:
         raise RateLimitError(detail)
     if status in (502, 503, 504):

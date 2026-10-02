@@ -61,10 +61,15 @@ def list_targets(
     table.add_column("Name", style="cyan")
     table.add_column("Type")
     table.add_column("Scope")
+    table.add_column("GPUs", justify="right")
     table.add_column("Description")
 
     for t in items:
-        table.add_row(t.name, t.type or "-", t.scope or "-", t.description or "")
+        gpus = f"{t.gpus} {t.gpu_model}".strip() if t.gpus else "-"
+        note = t.description or ""
+        if t.operator_update_available:
+            note = (note + " " if note else "") + "[yellow](operator update available)[/]"
+        table.add_row(t.name, t.type or "-", t.scope or "-", gpus, note)
 
     console.print(table)
 
