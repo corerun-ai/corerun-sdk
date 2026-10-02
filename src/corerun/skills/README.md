@@ -1,6 +1,6 @@
 # corerun skills
 
-Thirteen skills that teach a coding agent to drive corerun through its CLI.
+Fourteen skills that teach a coding agent to drive corerun through its CLI.
 
 | Skill | What it covers |
 |---|---|
@@ -13,6 +13,7 @@ Thirteen skills that teach a coding agent to drive corerun through its CLI.
 | `corerun-models` | The model registry — versions, stages, aliases |
 | `corerun-inference` | The catalogue, and serving models: deploying, changing, a server's key, why one will not start |
 | `corerun-endpoints` | The address callers use, its keys, and publishing models corerun does not run |
+| `corerun-agents` | Building, sharing and talking to agents; connectors (MCP servers, Kubernetes clusters), connections, and policies saying what agents may do |
 | `corerun-genai` | Agent traces and their span trees, sessions, judges, review queues, issue detection, evaluation runs |
 | `corerun-tokens` | Scoped tokens for exporters, CI and scripts, and revoking them |
 | `corerun-admin` | Administering an organisation: people, groups, SSO, service accounts, the licence, workspace limits, git hosts |

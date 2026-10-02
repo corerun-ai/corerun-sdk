@@ -597,3 +597,37 @@ def set_scope(
         + ("shared with every workspace" if result.get("scope") == "tenant" else f"{to_workspace}'s alone")
         + " [dim](nothing was reinstalled)[/dim]"
     ))
+
+
+@app.command("notebook-creators")
+def set_notebook_creators(
+    name: str = typer.Argument(..., metavar="NAME", help="Cluster or server name"),
+    roles: str = typer.Argument(..., help="Comma-separated: admin, engineer, deployer, analyst"),
+    org: bool = typer.Option(
+        False, "--org", "--tenant-wide", help="A cluster the organisation shares (organisation administrators)"
+    ),
+):
+    """
+    Choose which workspace roles may start notebooks on a cluster.
+
+    Admins and engineers unless changed. Someone whose role is not listed is
+    refused a notebook there, and told who may.
+
+    Example:
+        corerun clusters notebook-creators dgx admin,engineer,analyst
+        corerun clusters notebook-creators shared-h100 admin --org
+    """
+    wanted = [r.strip() for r in roles.split(",") if r.strip()]
+    if not wanted:
+        raise output.fail("name at least one role")
+    _init_client()
+    import corerun.clusters as clusters
+
+    try:
+        result = clusters.set_notebook_creators(name, wanted, org=org)
+    except Exception as e:
+        raise output.fail(str(e))
+    output.emit(result, lambda: console.print(
+        f"Notebooks on [green]{name}[/green] may be started by: "
+        + ", ".join(result.get("notebook_creator_roles") or wanted)
+    ))

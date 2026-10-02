@@ -107,8 +107,10 @@ Inference Servers:
 __version__ = "0.1.0"
 
 from corerun import (
+    agents,
     clusters,
     compute,
+    connectors,
     datasets,
     endpoints,
     org,
@@ -119,6 +121,7 @@ from corerun import (
     inference,
     jobs,
     notebooks,
+    policies,
     quota,
     registry,
     repos,
@@ -148,5 +151,8 @@ __all__ = [
     "tokens",
     "clusters",
     "compute",
+    "agents",
+    "connectors",
+    "policies",
     "quota",
 ]

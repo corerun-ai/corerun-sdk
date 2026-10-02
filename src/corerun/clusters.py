@@ -464,3 +464,28 @@ def set_scope(
 def organisation_workspaces(workspace: Optional[str] = None) -> list:
     """Every workspace in the organisation, for an administrator."""
     return get_client().get("/tenant/workspaces", workspace=workspace).get("workspaces") or []
+
+
+#: The workspace roles that may be allowed to start notebooks on a cluster.
+NOTEBOOK_CREATOR_ROLES = ("admin", "engineer", "deployer", "analyst")
+
+
+def set_notebook_creators(
+    name: str,
+    roles: List[str],
+    org: bool = False,
+    workspace: Optional[str] = None,
+) -> dict:
+    """
+    Which workspace roles may start notebooks on a cluster (admins and
+    engineers unless changed). ``org=True`` for a cluster the organisation
+    shares; that needs an organisation administrator.
+
+    Example:
+        corerun.clusters.set_notebook_creators("dgx", ["admin", "engineer", "analyst"])
+    """
+    unknown = [r for r in roles if r not in NOTEBOOK_CREATOR_ROLES]
+    if unknown:
+        raise ValueError(f"unknown role {unknown[0]!r}; one of {', '.join(NOTEBOOK_CREATOR_ROLES)}")
+    base = "/tenant/shared/clusters" if org else "/clusters"
+    return get_client().put(f"{base}/{name}/notebook-creators", json={"roles": [*dict.fromkeys(roles)]}, workspace=workspace)

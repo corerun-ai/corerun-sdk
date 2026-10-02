@@ -466,6 +466,21 @@ corerun org prices set openai gpt-4o --input 2 --output 8
 corerun endpoints metrics nova
 ```
 
+### Agents
+
+```bash
+# Build one, give it tools, and decide what it may do with them
+corerun agents create support-bot --compute gb10 --instructions-file prompt.md
+corerun connectors add prod --kubeconfig prod.yaml --context prod-readonly
+corerun agents tools-set support-bot --connector prod
+corerun agents policy-set support-bot -f rules.yaml     # allow / ask / deny, as YAML
+corerun policies create careful -f careful.yaml         # for every agent in the workspace
+
+# Share it, and talk to it
+corerun agents grant support-bot someone@example.com chat
+corerun agents chat support-bot "What changed in the last deploy?"
+```
+
 ### Your organisation
 
 ```bash

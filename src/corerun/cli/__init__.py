@@ -37,12 +37,15 @@ from rich.console import Console
 
 from corerun.cli import output
 from corerun.cli.accelerators import app as accelerators_app
+from corerun.cli.agents import app as agents_app
 from corerun.cli.org import app as org_app
 from corerun.cli.prices import app as prices_app
 from corerun.cli.auth import app as auth_app
 from corerun.cli.catalogue import app as catalogue_app
 from corerun.cli.clusters import app as clusters_app
 from corerun.cli.compute import app as compute_app
+from corerun.cli.connectors import app as connectors_app
+from corerun.cli.connectors import connections_app
 from corerun.cli.datasets import app as datasets_app
 from corerun.cli.endpoints import app as endpoints_app
 from corerun.cli.finetune import app as finetune_app
@@ -52,6 +55,7 @@ from corerun.cli.hosts import app as hosts_app
 from corerun.cli.inference import app as inference_app
 from corerun.cli.jobs import app as jobs_app
 from corerun.cli.notebooks import app as notebooks_app
+from corerun.cli.policies import app as policies_app
 from corerun.cli.quota import app as quota_app
 from corerun.cli.registry import app as registry_app
 from corerun.cli.repos import app as repos_app
@@ -137,6 +141,10 @@ app.add_typer(workspace_app, name="workspace", help="Workspace selection")
 app.add_typer(groups_app, name="groups", help="Groups, and the roles they hold")
 app.add_typer(org_app, name="org", help="Your organisation: people, sign-in, service accounts, licence, limits, usage, security and prices")
 app.add_typer(prices_app, name="prices", help="Providers, and what their models cost")
+app.add_typer(agents_app, name="agents", help="Agents: build, share, tools, policy, chat")
+app.add_typer(connectors_app, name="connectors", help="Connectors: MCP servers and Kubernetes clusters agents are given")
+app.add_typer(connections_app, name="connections", help="Your own sign-ins to connectors")
+app.add_typer(policies_app, name="policies", help="Policies: what agents may do with their tools")
 
 # Aliases for convenience
 app.add_typer(datasets_app, name="data", hidden=True)
@@ -155,6 +163,9 @@ app.add_typer(hosts_app, name="host", hidden=True)
 # "ws" is what gets typed; both reach the same commands.
 app.add_typer(workspace_app, name="ws", hidden=True)
 app.add_typer(groups_app, name="group", hidden=True)
+app.add_typer(agents_app, name="agent", hidden=True)
+app.add_typer(connectors_app, name="connector", hidden=True)
+app.add_typer(policies_app, name="policy", hidden=True)
 
 
 @app.command()

@@ -175,6 +175,17 @@ cluster to one workspace is refused while other workspaces have work running on
 it; say which, rather than stopping their work to make it pass. A host's
 architecture is detected when it connects — `hosts add` does not need `--arch`.
 
+Who may start notebooks on a cluster is set per cluster, by workspace role
+(admins and engineers unless changed):
+
+```bash
+corerun clusters notebook-creators <name> admin,engineer,analyst
+corerun clusters notebook-creators <name> admin --org     # a cluster the organisation shares
+```
+
+Widening it lets more people hold the cluster's GPUs with notebooks; ask the
+human before adding a role.
+
 `corerun compute list` shows the targets work can name with `--compute`;
 `corerun compute get <name>` one of them in full, and `corerun compute types`
 the kinds this platform supports.

@@ -272,6 +272,24 @@ Use a token that can **read** only the repositories needed, and say which in
 shown again. A workspace can also have connections of its own, from the
 console.
 
+## Connectors and policies for every workspace
+
+What agents work with and what they may do with it can be set once for the
+organisation. A connector added with `--org` is offered to every workspace; a
+policy added with `--org` applies to every agent in every workspace.
+
+```bash
+corerun connectors add prod --kubeconfig prod.yaml --context prod-readonly --org
+corerun connectors list --org
+corerun policies create guardrails -f guardrails.yaml --org
+corerun policies list --org
+```
+
+An organisation policy cannot be loosened below it: the strictest rule that
+matches wins wherever it was set. Use it for the lines nobody crosses (no
+deletes in `kube-system`, ask before any write in production), and leave the
+rest to workspaces and agents. The `corerun-agents` skill has the rule format.
+
 ## Money and use
 
 ```bash
@@ -335,6 +353,6 @@ not arrive. Pass the token through `--token-env`, never on the command line.
 - Do not grant `admin` where `engineer` or `deployer` does the job.
 - Do not reuse a person's token for automation; create a service account.
 - Do not print, log or paste secrets -- a service account's secret, a provider's
-  client secret, a git token. They are shown once for a reason.
+  client secret, a git token, a connector's token or kubeconfig. They are shown once for a reason.
 - Do not act on other people's workloads to free capacity; tell the human what
   is using it (`corerun quota gpus`).
