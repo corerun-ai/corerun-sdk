@@ -93,6 +93,8 @@ class InferenceServer(BaseModel):
     endpoint_name: Optional[str] = None
     model_facts: Optional[dict] = None
     features: List[str] = []
+    # Its KV cache beyond the GPU: {"memory_gb": 32, "disk": {"path", "budget_gb"}}.
+    kv_cache: Optional[dict] = None
     engine_version: Optional[str] = None
     # What the engine itself reported once running, and when -- as opposed to
     # engine_version, which is what the catalogue claimed at deploy.
@@ -163,6 +165,9 @@ class CreateInferenceServerRequest(BaseModel):
     extra_args: Optional[List[str]] = None
     served_model_names: Optional[List[str]] = None
     features: Optional[List[str]] = None
+    kv_cache: Optional[dict] = None
+    weights_override: Optional[dict] = None
+    replaces: Optional[str] = None
     dry_run: Optional[bool] = None
 
     # Where some of those extra args came from, when they came from the model's
@@ -234,6 +239,7 @@ def _server_from_response(data: dict) -> InferenceServer:
         endpoint_name=data.get("endpoint_name"),
         model_facts=data.get("model_facts"),
         features=data.get("features") or [],
+        kv_cache=data.get("kv_cache"),
         engine_version=data.get("engine_version"),
         running_engine_version=data.get("running_engine_version"),
         running_engine_version_at=data.get("running_engine_version_at"),
@@ -317,6 +323,12 @@ def deploy(
     extra_args: Optional[List[str]] = None,
     served_names: Optional[List[str]] = None,
     features: Optional[List[str]] = None,
+    kv_cache_memory_gb: Optional[float] = None,
+    kv_cache_disk: Optional[str] = None,
+    kv_cache_disk_budget_gb: Optional[float] = None,
+    weights_path: Optional[str] = None,
+    weights_hf: Optional[str] = None,
+    replaces: Optional[str] = None,
     dry_run: bool = False,
     wait: bool = False,
     timeout: int = 600,
@@ -363,6 +375,22 @@ def deploy(
         gpu_memory_util: GPU memory utilization (vLLM, 0.0-1.0)
         enforce_eager: Disable CUDA graphs (vLLM, for unsupported GPUs)
         lora_modules: List of LoRA adapters to load on top of base model
+        kv_cache_memory_gb: Keep the KV cache beyond the GPU in this much host
+            memory (vLLM): the LRU tier, for the engine's life. Not on a card
+            whose memory is unified with the host's (GB10).
+        kv_cache_disk: And/or in this folder on the host, kept across restarts,
+            so the same model deployed again starts warm. Needs
+            kv_cache_disk_budget_gb. A dry run says which tiers the compute
+            offers.
+        kv_cache_disk_budget_gb: How much of the disk the cache may use.
+        weights_path: For a registry model: take its weights from this folder
+            on the host instead, keeping the model's name, facts and recipe.
+            ``local_models(compute)`` lists the folders a host has.
+        weights_hf: For a registry model: take its weights from this Hugging
+            Face id instead, keeping its name, facts and recipe.
+        replaces: Edit a deployment: the id of the server this one takes the
+            place of. It keeps that server's id, keys and endpoint; every
+            other setting is the ones given here, decided afresh.
         wait: Wait for server to be running (default: False)
         timeout: Timeout in seconds when waiting (default: 600)
         workspace: Workspace ID (uses default if not specified)
@@ -445,6 +473,9 @@ def deploy(
         extra_args=extra_args,
         served_model_names=served_names,
         features=features,
+        kv_cache=_kv_cache(kv_cache_memory_gb, kv_cache_disk, kv_cache_disk_budget_gb),
+        weights_override=_weights_override(weights_path, weights_hf),
+        replaces=replaces,
         dry_run=dry_run or None,
     )
 
@@ -598,6 +629,7 @@ def update(
     served_model_names: Optional[List[str]] = None,
     features: Optional[List[str]] = None,
     endpoint: Optional[str] = None,
+    kv_cache: Optional[dict] = None,
     workspace: Optional[str] = None,
 ) -> InferenceServer:
     """
@@ -625,7 +657,14 @@ def update(
             and at most 1 (vLLM)
         served_model_names: The names callers ask for this model by. The
             endpoint routes by them, so renaming one moves its callers.
+        kv_cache: Its KV cache tiers beyond the GPU, replacing what it has:
+            ``{"memory_gb": 32, "disk": {"path": ..., "budget_gb": ...}}``;
+            ``{}`` keeps the cache on the GPU again.
         workspace: Workspace ID (uses default if not specified)
+
+    For a change to anything else -- the model, its weights, the compute --
+    deploy again with ``replaces=<server id>``: every setting, decided afresh,
+    keeping the server's id, keys and endpoint.
 
     Returns:
         The server, deploying the change
@@ -649,6 +688,7 @@ def update(
             "served_model_names": served_model_names,
             "features": features,
             "endpoint_name": endpoint,
+            "kv_cache": kv_cache,
         }.items()
         if value is not None
     }
@@ -1022,3 +1062,85 @@ def wait_for_running(
 
     raise TimeoutError(f"Inference server {server_id} did not start within {timeout}s")
 
+
+def _kv_cache(
+    memory_gb: Optional[float],
+    disk: Optional[str],
+    budget_gb: Optional[float],
+) -> Optional[dict]:
+    """The request's kv_cache: its tiers, or None to keep the cache on the GPU."""
+    out: dict = {}
+    if memory_gb:
+        out["memory_gb"] = memory_gb
+    if disk:
+        out["disk"] = {"path": disk, "budget_gb": budget_gb or 0}
+    return out or None
+
+
+def _weights_override(path: Optional[str], hf: Optional[str]) -> Optional[dict]:
+    """A registry model's weights from somewhere else, or None for its own."""
+    if path and hf:
+        raise ValueError("weights_path or weights_hf, not both")
+    if path:
+        return {"source": "path", "id": path}
+    if hf:
+        return {"source": "huggingface", "id": hf}
+    return None
+
+
+def local_models(compute: str, workspace: Optional[str] = None) -> dict:
+    """
+    The model folders a bare-metal host has -- its usual model folders, Hugging
+    Face's cache and any its administrator named -- to deploy from a path.
+
+    Returns:
+        ``{"available", "reason", "roots", "models": [{"path", "name", ...}]}``.
+        ``available`` is False with the reason for a Kubernetes cluster
+        ("kubernetes"), a host that is not connected, or an older operator.
+    """
+    client = get_client()
+    return client.get(
+        "/inference-servers/local-models", params={"compute": compute}, workspace=workspace,
+    )
+
+
+def catalogue_fit(workspace: Optional[str] = None) -> dict:
+    """
+    The catalogue as publishing chooses from it: models, each with its builds
+    (one per quantization, in the standard publisher order), and for every
+    compute this workspace can use whether the publisher's card count for its
+    card fits -- "fits", "short", or "unknown" where the publisher gives none.
+
+    Returns:
+        ``{"models": [{"name", ..., "builds": [{"slug", "external_id",
+        "quantization", "published_as", "fit": [{"compute", "verdict",
+        "cards"}]}]}], "computes": [{"name", "accelerator", "gpus"}]}``
+    """
+    client = get_client()
+    return client.get("/registry/catalogue", workspace=workspace)
+
+
+def publish_from_catalogue(
+    catalogue: str,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> dict:
+    """
+    Publish a catalogue build into this workspace's registry, as a remote
+    version: its weights stay where the catalogue says and are fetched when it
+    is deployed, and it carries the catalogue's facts. Administrators of the
+    workspace or organisation, on a plan with model publishing.
+
+    Args:
+        catalogue: The build's catalogue slug (or its model id)
+        name: The registry name deployers pick it by; the slug by default
+        description: Defaults to the catalogue's
+    """
+    client = get_client()
+    body = {"catalogue": catalogue}
+    if name:
+        body["name"] = name
+    if description:
+        body["description"] = description
+    return client.post("/registry/models/publish", json=body, workspace=workspace)

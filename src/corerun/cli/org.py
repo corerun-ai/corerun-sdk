@@ -395,16 +395,65 @@ def audit_list(
     actor: Optional[str] = typer.Option(None, "--actor", help="Part of who did it"),
     action: Optional[str] = typer.Option(None, "--action", help="Part of what was done"),
     outcome: Optional[str] = typer.Option(None, "--outcome", help="success, denied or failure"),
+    category: Optional[List[str]] = typer.Option(
+        None,
+        "--category",
+        "-c",
+        help="signin, people, settings, gateway, agent_network, agent_tools, agent_approvals, "
+        "agent_files, "
+        "agent_sandboxes, or agent_changes (repeatable); agents for every agent one",
+    ),
+    agent: Optional[str] = typer.Option(None, "--agent", help="One agent's events: its name or id"),
+    workspace_id: Optional[str] = typer.Option(
+        None, "--in-workspace", help="One workspace's events, by id"
+    ),
+    csv_file: Optional[str] = typer.Option(
+        None, "--csv", help="Write the events to this CSV file instead (up to 10,000)"
+    ),
     limit: int = typer.Option(50, "--limit"),
 ):
-    """The audit trail, newest first."""
+    """The audit trail, newest first.
+
+    Example:
+        corerun org audit --category agents --agent support-bot --since 7d
+    """
     if ctx.invoked_subcommand is not None:
         return
     _init_client()
     import corerun.org as org
 
+    categories: List[str] = []
+    for c in category or []:
+        categories += AGENT_CATEGORIES if c == "agents" else [c]
     try:
-        page = org.audit_events(since=since, until=until, actor=actor, action=action, outcome=outcome, limit=limit)
+        if agent:
+            agent = _audit_agent(org, agent)
+        if csv_file:
+            text = org.audit_csv(
+                since=since,
+                until=until,
+                actor=actor,
+                action=action,
+                outcome=outcome,
+                category=categories,
+                agent=agent,
+                workspace=workspace_id,
+            )
+            with open(csv_file, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            console.print(f"Wrote {max(text.count(chr(10)) - 1, 0)} events to {csv_file}")
+            return
+        page = org.audit_events(
+            since=since,
+            until=until,
+            actor=actor,
+            action=action,
+            outcome=outcome,
+            limit=limit,
+            category=categories,
+            agent=agent,
+            workspace=workspace_id,
+        )
     except Exception as e:
         raise output.fail(str(e))
     events = page.get("events") or []
@@ -432,6 +481,33 @@ def audit_list(
     output.emit(page, render)
 
 
+AGENT_CATEGORIES = [
+    "agent_network",
+    "agent_tools",
+    "agent_approvals",
+    "agent_files",
+    "agent_sandboxes",
+    "agent_changes",
+]
+
+
+def _audit_agent(org, name_or_id: str) -> str:
+    """An agent named in the organisation's trail, by its id or its name."""
+    known = org.audit_agents()
+    for a in known:
+        if a.get("agent_id") == name_or_id:
+            return name_or_id
+    named = [a for a in known if (a.get("name") or "").lower() == name_or_id.lower()]
+    if len(named) == 1:
+        return named[0]["agent_id"]
+    if named:
+        where = ", ".join(
+            f"{a['agent_id']} ({a.get('workspace_name') or a.get('workspace_id')})" for a in named
+        )
+        raise ValueError(f"More than one agent is called {name_or_id}: {where}. Name it by its id.")
+    raise ValueError(f"No agent called {name_or_id} in this organisation.")
+
+
 @audit_app.command("exports")
 def audit_exports():
     """Where the organisation's audit events are sent."""
@@ -448,13 +524,16 @@ def audit_exports():
             console.print("[dim]No destinations. Add one with `corerun org audit add`.[/dim]")
             return
         t = Table()
-        for col in ("Name", "Kind", "Address", "Sending"):
+        for col in ("Name", "Kind", "Format", "Sends", "Address", "Sending"):
             t.add_column(col)
         for x in found:
             kind = x.get("kind", "")
             if kind == "syslog":
-                kind += f" {x.get('transport') or 'tcp+tls'} {x.get('format') or 'json'}"
-            t.add_row(x.get("name", ""), kind, x.get("address", ""), "yes" if x.get("enabled") else "paused")
+                kind += f" {x.get('transport') or 'tcp+tls'}"
+            sends = ", ".join(x.get("categories") or []) or "everything"
+            sending = "yes" if x.get("enabled") else "paused"
+            fmt = x.get("format") or "json"
+            t.add_row(x.get("name", ""), kind, fmt, sends, x.get("address", ""), sending)
         console.print(t)
 
     output.emit(found, render)
@@ -466,11 +545,26 @@ def audit_add(
     kind: str = typer.Option(..., "--kind", help="webhook or syslog"),
     address: str = typer.Option(..., "--address", help="An HTTPS URL, or host:port for syslog"),
     transport: Optional[str] = typer.Option(None, "--transport", help="syslog: tcp+tls (default), tcp or udp"),
-    format: Optional[str] = typer.Option(None, "--format", help="syslog: json (default) or cef"),
+    format: Optional[str] = typer.Option(
+        None, "--format", help="json (default), ocsf, or for syslog cef"
+    ),
+    category: Optional[List[str]] = typer.Option(
+        None, "--category", help="Send only this category (repeatable); none is everything"
+    ),
     header: Optional[str] = typer.Option(None, "--header", help="webhook: the header the token goes in (Authorization, as Bearer)"),
     token_env: Optional[str] = typer.Option(None, "--token-env", help="webhook: read the token from this environment variable"),
 ):
-    """Add a SIEM destination. A test event is sent first; one that does not arrive is refused."""
+    """
+    Add a SIEM destination. A test event is sent first; one that does not
+    arrive is refused.
+
+    Categories: signin, people, settings, gateway, agent_network,
+    agent_tools, agent_approvals, agent_files, agent_sandboxes.
+
+    Example:
+        corerun org audit add soc --kind webhook --address https://siem:8088/hec \\
+            --format ocsf --token-env HEC_TOKEN --category agent_network --category gateway
+    """
     import os
 
     token = None
@@ -482,10 +576,47 @@ def audit_add(
     import corerun.org as org
 
     try:
-        added = org.add_audit_export(name, kind, address, transport=transport, format=format, header=header, token=token)
+        added = org.add_audit_export(
+            name, kind, address, transport=transport, format=format, header=header, token=token,
+            categories=list(category) if category else None,
+        )
     except Exception as e:
         raise output.fail(str(e))
     output.emit(added, lambda: console.print(f"[green]Added {name}[/green]: a test event was delivered."))
+
+
+@audit_app.command("set")
+def audit_set(
+    name: str = typer.Argument(..., help="The destination"),
+    format: Optional[str] = typer.Option(None, "--format", help="json, ocsf, or for syslog cef"),
+    category: Optional[List[str]] = typer.Option(
+        None, "--category", help="Send only these (repeatable)"
+    ),
+    everything: bool = typer.Option(False, "--everything", help="Send every category"),
+):
+    """
+    Change what a destination is sent, or in which format.
+
+    Example:
+        corerun org audit set soc --format ocsf
+        corerun org audit set soc --category agent_network --category agent_approvals
+    """
+    if category and everything:
+        raise output.fail("--category or --everything, not both.")
+    categories = [] if everything else (list(category) if category else None)
+    if format is None and categories is None:
+        raise output.fail("Nothing to change: give --format, --category or --everything.")
+    _init_client()
+    import corerun.org as org
+
+    try:
+        changed = org.update_audit_export(name, format=format, categories=categories)
+    except Exception as e:
+        raise output.fail(str(e))
+    sends = ", ".join(changed.get("categories") or []) or "everything"
+    output.emit(changed, lambda: console.print(
+        f"[green]{name}[/green]: {changed.get('format') or 'json'}, sends {sends}"
+    ))
 
 
 @audit_app.command("test")

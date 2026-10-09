@@ -53,12 +53,9 @@ api_url=https://corerun.example.com/api/v1
 writes the file for you.
 
 Model endpoints are called at the address the platform reports for each one,
-which it knows better than the SDK can work out. Failing that, the address
-follows the API address: `api` under the deployment's own domain, whether the
-API was reached at the domain or at its console — `https://corerun.ai/api/v1`
-and `https://console.corerun.ai/api/v1` both publish endpoints at
-`https://api.corerun.ai`, and an environment named in the host keeps its domain
-(`https://console.dev.corerun.ai/api/v1` → `https://api.dev.corerun.ai`).
+which it knows better than the SDK can work out. Failing that, an endpoint is
+called where every deployment serves it: under `/inference` on the API's own
+host (`https://console.corerun.ai/api/v1` → `https://console.corerun.ai/inference`).
 
 `CORERUN_INFERENCE_URL` exists for what neither of those can cover: a deployment
 whose callers reach the gateway on a host of its own, or behind a private load

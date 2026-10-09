@@ -46,6 +46,7 @@ from corerun.cli.clusters import app as clusters_app
 from corerun.cli.compute import app as compute_app
 from corerun.cli.connectors import app as connectors_app
 from corerun.cli.connectors import connections_app
+from corerun.cli.mcp_servers import app as mcp_servers_app
 from corerun.cli.datasets import app as datasets_app
 from corerun.cli.endpoints import app as endpoints_app
 from corerun.cli.finetune import app as finetune_app
@@ -144,6 +145,7 @@ app.add_typer(prices_app, name="prices", help="Providers, and what their models 
 app.add_typer(agents_app, name="agents", help="Agents: build, share, tools, policy, chat")
 app.add_typer(connectors_app, name="connectors", help="Connectors: MCP servers and Kubernetes clusters agents are given")
 app.add_typer(connections_app, name="connections", help="Your own sign-ins to connectors")
+app.add_typer(mcp_servers_app, name="mcp-servers", help="Custom MCP servers: built from API descriptions, run by the platform")
 app.add_typer(policies_app, name="policies", help="Policies: what agents may do with their tools")
 
 # Aliases for convenience

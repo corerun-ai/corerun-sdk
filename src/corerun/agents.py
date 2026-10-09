@@ -12,6 +12,7 @@ and a project's file, which is its bytes -- go through the client's own
 transport, so they carry the same credential and workspace as everything else.
 """
 
+import builtins
 import json
 from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import quote
@@ -61,6 +62,8 @@ class Agent(_Model):
     telemetry: Optional[Dict[str, Any]] = None
     apps: Optional[Dict[str, Any]] = None
     tools: Optional[Dict[str, Any]] = None
+    #: "report" (refusals recorded, nothing refused) or "enforce"
+    network: Optional[str] = None
     may_manage: bool = False
     creator_name: Optional[str] = None
     creator_email: Optional[str] = None
@@ -77,6 +80,11 @@ class Agent(_Model):
 
 def _path(agent_id: str, rest: str = "") -> str:
     return f"/agents/{quote(agent_id, safe='')}{rest}"
+
+
+def _guard_path(agent_id: str, rest: str = "") -> str:
+    """An agent's route at corerun-agentguard: its rules, its network."""
+    return f"/agentguard/agents/{quote(agent_id, safe='')}{rest}"
 
 
 def _file_path(path: str) -> str:
@@ -144,7 +152,8 @@ def update(agent_id: str, workspace: Optional[str] = None, **fields: Any) -> Age
     values of anything not given. Fields: name, description, instructions,
     harness, starters, ready (0-5 sandboxes kept warm), model ("" for the
     organisation's default), sandbox ({"shell": ..., "web": ...}, each
-    "allow", "ask" or "off").
+    "allow", "ask" or "off"), network ("enforce": its network rules are
+    enforced from now on; there is no going back to reporting).
     """
     current = get(agent_id, workspace=workspace)
     body: Dict[str, Any] = {
@@ -221,6 +230,43 @@ def resend_invite(agent_id: str, invite_id: str, workspace: Optional[str] = None
     )
 
 
+def publication(agent_id: str, workspace: Optional[str] = None) -> Dict[str, Any]:
+    """Whether an agent is published, and as whom it answers with nobody signed in."""
+    return get_client().get(_path(agent_id, "/publication"), workspace=workspace)
+
+
+def publish(
+    agent_id: str,
+    mode: Optional[str] = None,
+    delegate_id: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Publish an agent, or change how: ``mode`` "service" answers as itself,
+    "delegate" as a person -- the caller, or ``delegate_id``, who then says so
+    from their own session (``confirm_publication``). ``enabled=False``
+    keeps the setting and answers nobody."""
+    body: Dict[str, Any] = {}
+    if mode is not None:
+        body["mode"] = mode
+    if delegate_id:
+        body["delegate_id"] = delegate_id
+    if enabled is not None:
+        body["enabled"] = enabled
+    return get_client().put(_path(agent_id, "/publication"), json=body, workspace=workspace)
+
+
+def unpublish(agent_id: str, workspace: Optional[str] = None) -> None:
+    """Stop an agent answering with nobody signed in; its own account goes."""
+    get_client().delete(_path(agent_id, "/publication"), workspace=workspace)
+
+
+def confirm_publication(agent_id: str, workspace: Optional[str] = None) -> Dict[str, Any]:
+    """Say an agent published as you may act as you. Only from your own
+    session: a key or a token is refused."""
+    return get_client().post(_path(agent_id, "/publication/confirm"), workspace=workspace)
+
+
 def set_telemetry(agent_id: str, enabled: bool, workspace: Optional[str] = None) -> Agent:
     """Trace every turn into an experiment of the agent's own, or stop."""
     body = {"enabled": enabled}
@@ -247,14 +293,190 @@ def set_tools(
     return get_client().put(_path(agent_id, "/tools"), json=body, workspace=workspace).get("connectors") or []
 
 
-def policy(agent_id: str, workspace: Optional[str] = None) -> Dict[str, Any]:
-    """The agent's own policy rules: {rules: [...], default: bool}."""
-    return get_client().get(_path(agent_id, "/policy"), workspace=workspace)
+def policy(agent_id: str, workspace: Optional[str] = None, kind: str = "tools") -> Dict[str, Any]:
+    """The agent's own policy rules of a kind (tools, network): {rules: [...], default: bool}."""
+    return get_client().get(_guard_path(agent_id, "/policy"), params={"kind": kind}, workspace=workspace)
 
 
-def set_policy(agent_id: str, rules: List[Dict[str, Any]], workspace: Optional[str] = None) -> Dict[str, Any]:
-    """Replace the agent's policy rules. An empty list returns it to the default (reads only)."""
-    return get_client().put(_path(agent_id, "/policy"), json={"rules": rules}, workspace=workspace)
+def set_policy(
+    agent_id: str, rules: List[Dict[str, Any]], workspace: Optional[str] = None, kind: str = "tools"
+) -> Dict[str, Any]:
+    """
+    Replace the agent's policy rules of a kind. An empty list returns it to the
+    default: reading only, for tools; the organisation's and workspace's rules
+    only, for the network.
+    """
+    return get_client().put(
+        _guard_path(agent_id, "/policy"), params={"kind": kind}, json={"rules": rules}, workspace=workspace
+    )
+
+
+UNMATCHED = ("deny", "ask", "allow")
+
+
+def network_unmatched(agent_id: str, workspace: Optional[str] = None) -> Dict[str, Any]:
+    """
+    What a destination none of the agent's network rules match gets:
+    ``{effect, effective, levels}`` -- its own say (``""`` for none), what
+    applies, and what the organisation, workspace and agent each said. The
+    strictest said wins; nothing said is ``deny`` (an allowlist).
+    """
+    return get_client().get(_guard_path(agent_id, "/network/unmatched"), workspace=workspace)
+
+
+def set_network_unmatched(
+    agent_id: str, effect: str, workspace: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Set the agent's say: ``deny`` (an allowlist), ``ask`` (put to the person),
+    ``allow`` (a blocklist), or ``""`` to leave it to the levels above.
+    """
+    if effect not in UNMATCHED and effect != "":
+        raise ValueError(f"effect is one of {', '.join(UNMATCHED)}, or '' for none")
+    return get_client().put(
+        _guard_path(agent_id, "/network/unmatched"), json={"effect": effect}, workspace=workspace
+    )
+
+
+def network_refused(agent_id: str, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Where the agent was refused on the network in the last seven days, most
+    recent first: ``[{host, port, times, last, would?}]``. ``would`` marks a
+    refusal an agent still reporting let through. A destination reached since
+    its last refusal is left out. For whoever manages the agent.
+    """
+    answer = get_client().get(_guard_path(agent_id, "/network/refused"), workspace=workspace) or {}
+    return answer.get("destinations") or []
+
+
+def activity(
+    agent_id: str,
+    since: str = "24h",
+    person: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Where the agent connected in a period, by destination, for whoever
+    manages it: ``{summary, destinations, people}``. ``summary`` totals
+    connections, refusals, asks and bytes sent and received; each destination
+    has its decisions (``reached``, ``refused``, ``asked``, ``approved`` ...),
+    its traffic, the rule that decided (``decided_by``) and what looks wrong
+    (``workaround``, ``sent_more``). ``since`` is ``24h``, ``7d`` or ``30d``;
+    ``person`` an account id from ``people``.
+    """
+    params: Dict[str, Any] = {"since": since, "view": "network"}
+    if person:
+        params["person"] = person
+    return (
+        get_client().get(_guard_path(agent_id, "/activity"), params=params, workspace=workspace)
+        or {}
+    )
+
+
+def activity_timeline(
+    agent_id: str,
+    since: str = "24h",
+    person: Optional[str] = None,
+    category: Optional[List[str]] = None,
+    before: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Everything recorded about the agent and every change made to it, newest
+    first: ``{events, next_before, people}``. ``category`` narrows it
+    (``agent_network``, ``agent_tools``, ``agent_approvals``, ``agent_files``,
+    ``agent_sandboxes``, ``agent_changes``); pass ``next_before`` back as
+    ``before`` for the page after.
+    """
+    params: Dict[str, Any] = {"since": since, "view": "timeline"}
+    if person:
+        params["person"] = person
+    if category:
+        params["category"] = ",".join(category)
+    if before:
+        params["before"] = before
+    return (
+        get_client().get(_guard_path(agent_id, "/activity"), params=params, workspace=workspace)
+        or {}
+    )
+
+
+def activity_csv(
+    agent_id: str,
+    view: str = "network",
+    since: str = "24h",
+    person: Optional[str] = None,
+    category: Optional[List[str]] = None,
+    workspace: Optional[str] = None,
+) -> str:
+    """The agent's activity (``view`` network or timeline) as CSV text."""
+    params: Dict[str, Any] = {"since": since, "view": view, "format": "csv"}
+    if person:
+        params["person"] = person
+    if category and view == "timeline":
+        params["category"] = ",".join(category)
+    return get_client().get(
+        _guard_path(agent_id, "/activity"), params=params, workspace=workspace, response_type="text"
+    )
+
+
+def allow_network(
+    agent_id: str, host: str, port: str = "443", workspace: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Allow the agent one destination in its own network rules, as the console's
+    Allow does. A rule that names that very host is changed rather than joined
+    by another: one asking about or refusing it gives the host up (the
+    strictest rule wins, so an allow beside it would change nothing), and one
+    allowing it already is enough. Refused, with the rule named, when a
+    pattern of the agent's own (``*.github.com``) would still win.
+    """
+    own = policy(agent_id, workspace=workspace, kind="network")
+    rules = [] if own.get("default") else builtins.list(own.get("rules") or [])
+    host, port = host.lower(), str(port)
+    kept, allowed, changed = [], False, False
+    for r in rules:
+        m = r.get("match") or {}
+        hosts = m.get("host") or []
+        plain = not r.get("except") and set(m) <= {"host", "port"}
+        names_it = host in [h.lower() for h in hosts] and _port_taken(m.get("port"), port)
+        if not plain or not names_it:
+            kept.append(r)
+            continue
+        if r.get("effect") == "allow":
+            allowed = True
+            kept.append(r)
+            continue
+        changed = True
+        rest = [h for h in hosts if h.lower() != host]
+        if rest:
+            kept.append({**r, "match": {**m, "host": rest}})
+    if not allowed:
+        kept.append({"name": host, "effect": "allow", "match": {"host": [host], "port": [port]}})
+        changed = True
+    for r in kept:
+        m = r.get("match") or {}
+        if r.get("effect") != "allow" and any(
+            _pattern_matches(h, host) for h in (m.get("host") or ["*"])
+        ) and _port_taken(m.get("port"), port):
+            verb = "refuses" if r.get("effect") == "deny" else "asks about"
+            name = r.get("name")
+            raise ValueError(f"the agent's rule {name!r} still {verb} {host}; change that rule")
+    if not changed:
+        return own
+    return set_policy(agent_id, kept, workspace=workspace, kind="network")
+
+
+def _pattern_matches(pattern: str, value: str) -> bool:
+    """A pattern as the egress proxy reads it: * is anything, dots included."""
+    import re
+
+    parts = [re.escape(p) for p in pattern.lower().split("*")]
+    return re.fullmatch(".*".join(parts), value.lower()) is not None
+
+
+def _port_taken(ports: Optional[List[str]], port: str) -> bool:
+    return not ports or any(_pattern_matches(str(p), port) for p in ports)
 
 
 def consents(agent_id: str, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -267,6 +489,53 @@ def revoke_consent(agent_id: str, consent_id: str, workspace: Optional[str] = No
 
 
 # ── the caller's sandbox ────────────────────────────────────────────────────
+
+
+def workspace_activity(
+    since: str = "24h",
+    person: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    timeline: bool = False,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Every agent's activity in the workspace, for its administrators: as
+    ``activity`` (by destination, each with its ``agent_id``) or, with
+    ``timeline``, as ``activity_timeline``. ``agent_id`` narrows it to one.
+    """
+    params: Dict[str, Any] = {"since": since, "view": "timeline" if timeline else "network"}
+    if person:
+        params["person"] = person
+    if agent_id:
+        params["agent"] = agent_id
+    return get_client().get("/agentguard/activity", params=params, workspace=workspace) or {}
+
+
+def asks(pending: bool = False, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    What your agents asked you in this workspace: waiting (``status``
+    pending, until ``expires_at``) and answered in the last seven days. Each
+    has its agent, kind (mcp, kubernetes, network), title and what an
+    approval of it names. Answered from the console's Approvals page or the
+    chat, with your own session.
+    """
+    params = {"status": "pending"} if pending else {}
+    answer = get_client().get("/agentguard/asks", params=params, workspace=workspace) or {}
+    return answer.get("asks") or []
+
+
+def sandboxes(workspace: Optional[str] = None) -> Dict[str, Any]:
+    """
+    The workspace's agent sandboxes: ``{sandboxes, running, ready, all}`` --
+    your own, or everyone's (``all``) for its administrators, with the ready
+    ones waiting for whoever opens an agent next.
+    """
+    return get_client().get("/agent-sandboxes", workspace=workspace) or {}
+
+
+def stop_sandbox(sandbox_id: str, workspace: Optional[str] = None) -> None:
+    """Stop an agent sandbox: your own, or anyone's for a workspace administrator (recorded)."""
+    get_client().delete(f"/agent-sandboxes/{sandbox_id}", workspace=workspace)
 
 
 def start_session(agent_id: str, workspace: Optional[str] = None) -> Optional[AgentSession]:

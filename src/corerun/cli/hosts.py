@@ -50,6 +50,12 @@ def add_host(
         help="amd64 or arm64; usually unneeded -- detected when the host connects",
     ),
     os: str = typer.Option("linux", "--os", help="linux or darwin"),
+    runtime: Optional[str] = typer.Option(
+        None,
+        "--runtime",
+        help="What runs a Linux host's workloads: incus (default; installed if "
+        "missing) or docker (the Docker Engine already on the machine)",
+    ),
     accelerator_family: Optional[str] = typer.Option(
         None,
         "--accelerator-family",
@@ -71,7 +77,8 @@ def add_host(
     Prepare a bare-metal machine so it can join.
 
     Two commands come back, and they run on the machine being added: the first
-    installs the operator (and Incus, if it is missing), the second joins it
+    installs the operator (and Incus, if it is missing -- or, with
+    --runtime docker, uses the Docker already there), the second joins it
     with a one-time enrollment token.
 
     The token is a credential and is printed in full here, once. Running the
@@ -82,6 +89,7 @@ def add_host(
 
     Example:
         corerun host add dgx1
+        corerun host add gpu-box --runtime docker
     """
     _init_client()
 
@@ -95,6 +103,7 @@ def add_host(
             accelerator_family=accelerator_family,
             tenant_wide=tenant_wide,
             workspace=workspace,
+            runtime=runtime,
         )
     except Exception as e:
         raise output.fail(str(e))

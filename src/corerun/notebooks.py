@@ -58,7 +58,6 @@ class Notebook(BaseModel):
     gpu: float = 0
     profile: Optional[str] = None
     datasets: Optional[List[str]] = []
-    workspace_env_vars: Optional[List[str]] = []  # IDs of workspace env vars
     custom_env_vars: Optional[List[NotebookEnvVar]] = []
     url: Optional[str] = None
     error: Optional[str] = None
@@ -97,7 +96,7 @@ class Notebook(BaseModel):
         """Check if notebook is ready to use (running with URL)."""
         return self.status == "running" and self.url is not None
 
-    @field_validator("datasets", "workspace_env_vars", "custom_env_vars", mode="before")
+    @field_validator("datasets", "custom_env_vars", mode="before")
     @classmethod
     def _null_is_empty(cls, v):
         return [] if v is None else v
@@ -123,7 +122,6 @@ class CreateNotebookRequest(BaseModel):
     gpu: float = 0
     profile: Optional[str] = None
     datasets: Optional[List[str]] = None
-    workspace_env_vars: Optional[List[str]] = None  # IDs of workspace env vars
     custom_env_vars: Optional[List[CreateNotebookEnvVarRequest]] = None
     visibility: Optional[str] = None  # "personal" or "shared"
     storage_class: Optional[str] = None
@@ -145,7 +143,6 @@ def _notebook_from_response(data: dict) -> Notebook:
         gpu=data.get("gpu", 0),
         profile=data.get("profile"),
         datasets=data.get("datasets", []),
-        workspace_env_vars=data.get("workspace_env_vars", []),
         custom_env_vars=custom_env_vars,
         url=data.get("url"),
         error=data.get("error"),
@@ -218,7 +215,6 @@ def create(
     gpu: float = 0,
     profile: Optional[str] = None,
     datasets: Optional[List[str]] = None,
-    workspace_env_vars: Optional[List[str]] = None,
     custom_env_vars: Optional[List[Dict[str, Any]]] = None,
     visibility: Optional[str] = None,
     storage_class: Optional[str] = None,
@@ -239,7 +235,6 @@ def create(
         gpu: Number of GPUs (0 for CPU-only)
         profile: Resource profile name from cluster
         datasets: List of dataset names to mount
-        workspace_env_vars: List of workspace environment variable IDs to include
         custom_env_vars: List of custom env vars [{"name": "VAR", "value": "val", "is_secret": False}]
         visibility: "personal" (only you) or "shared" (the workspace). Defaults to personal.
         storage_class: Storage class for the notebook's volume (Kubernetes)
@@ -295,7 +290,6 @@ def create(
         gpu=gpu,
         profile=profile,
         datasets=datasets,
-        workspace_env_vars=workspace_env_vars,
         custom_env_vars=env_var_requests,
         visibility=visibility,
         storage_class=storage_class,

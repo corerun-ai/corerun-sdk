@@ -152,18 +152,29 @@ def add_connector(
     kubeconfig: Optional[Path] = typer.Option(None, "--kubeconfig", help="A Kubernetes cluster: its kubeconfig file", exists=True, dir_okay=False),
     context: Optional[str] = typer.Option(None, "--context", help="Which context, when the kubeconfig has several"),
     description: Optional[str] = typer.Option(None, "--description", "-d"),
+    via: Optional[str] = typer.Option(
+        None, "--via", help="A server in your network: the connected cluster or host that reaches it"
+    ),
+    direct: bool = typer.Option(
+        False, "--direct", help="A server in your network the platform reaches itself (on-premises only)"
+    ),
     org: bool = ORG,
 ):
     """
     Add a connector. It is checked live first, and refused if the check fails.
+    A server inside your network is reached through a connected cluster or
+    host (--via), or on-premises directly (--direct).
 
     Example:
         corerun connectors add github --url https://api.githubcopilot.com/mcp/ --auth oauth
         corerun connectors add search --url https://mcp.example.com --auth bearer --token $TOKEN
         corerun connectors add prod --kubeconfig ~/.kube/prod.yaml --context prod-admin
+        corerun connectors add wiki --url http://wiki.internal:8080/mcp --via gb10dgx01-host --auth bearer --token $T
     """
     if bool(url) == bool(kubeconfig):
         raise output.fail("give --url for an MCP server, or --kubeconfig for a Kubernetes cluster")
+    if via and direct:
+        raise output.fail("a server in your network is reached --via a compute, or --direct: not both")
     _init_client()
     import corerun.connectors as connectors
 
@@ -178,6 +189,8 @@ def add_connector(
                 name, url=url, auth=auth, token=token, headers=_headers(header),
                 client_id=client_id, client_secret=client_secret, scopes=scope or None,
                 description=description, org=org,
+                location="network" if (via or direct) else None,
+                via=via if via else ("" if direct else None),
             )
     except Exception as e:
         raise output.fail(_context_hint(e))

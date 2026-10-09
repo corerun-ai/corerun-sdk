@@ -272,6 +272,7 @@ def prepare_host(
     accelerator_family: Optional[str] = None,
     tenant_wide: bool = False,
     workspace: Optional[str] = None,
+    runtime: Optional[str] = None,
 ) -> HostEnrollment:
     """
     Prepare a bare-metal host for its operator, and return what it needs to join.
@@ -292,6 +293,9 @@ def prepare_host(
             itself.
         tenant_wide: Create it for the whole tenant rather than this workspace
         workspace: Workspace ID (uses default if not specified)
+        runtime: What runs a Linux host's workloads: "incus" (the default,
+            installed if missing) or "docker" (the Docker Engine already on
+            the machine, GPUs through the NVIDIA Container Toolkit)
 
     Returns:
         HostEnrollment, holding the install and connect commands
@@ -311,6 +315,7 @@ def prepare_host(
             "workspace_scope": _scope(tenant_wide),
             **({"architecture": architecture} if architecture else {}),
             **({"accelerator_family": accelerator_family} if accelerator_family else {}),
+            **({"runtime": runtime} if runtime else {}),
         },
         workspace=workspace,
     )

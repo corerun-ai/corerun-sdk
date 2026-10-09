@@ -269,6 +269,12 @@ CAPABILITIES = (
 )
 
 
+# What each kind holds when it is made, as the console's New workspace gives
+# it. An agents workspace holds the GenAI bundle: its agents are traced and
+# evaluated there.
+KIND_BUNDLES = {"agents": ["genai"], "genai": ["genai"], "deploy": ["deploy"], "ml": ["train", "deploy"]}
+
+
 @app.command("create")
 def create_workspace(
     name: str = typer.Argument(..., help="Display name, e.g. 'ML Research'"),
@@ -278,6 +284,11 @@ def create_workspace(
         "--capabilities",
         "-c",
         help=f"Comma-separated subset of: {', '.join(CAPABILITIES)}. All of them if omitted.",
+    ),
+    kind: str = typer.Option(
+        None,
+        "--kind",
+        help="What it is for: agents (deploy and run agents), genai (evaluate GenAI), deploy (model endpoints) or ml (train and fine-tune)",
     ),
     use: bool = typer.Option(False, "--use", help="Make it the workspace this CLI acts in"),
 ):
@@ -292,6 +303,7 @@ def create_workspace(
         corerun ws create "ML Research"
         corerun ws create "Speech" --slug speech --capabilities notebooks,training
         corerun ws create "Scratch" --use
+        corerun ws create "Support agents" --kind agents
     """
 
     config = _require_credentials()
@@ -302,6 +314,16 @@ def create_workspace(
         raise typer.Exit(1)
 
     payload = {"slug": derived, "display_name": name}
+    if kind:
+        if capabilities:
+            console.print("[red]Error:[/red] --kind decides what it holds; leave out --capabilities")
+            raise typer.Exit(1)
+        bundles = KIND_BUNDLES.get(kind.strip().lower())
+        if bundles is None:
+            console.print(f"[red]Error:[/red] unknown kind: {kind}. Known: {', '.join(KIND_BUNDLES)}")
+            raise typer.Exit(1)
+        payload["kind"] = kind.strip().lower()
+        payload["bundles"] = bundles
     if capabilities:
         wanted = [c.strip().lower() for c in capabilities.split(",") if c.strip()]
         unknown = [c for c in wanted if c not in CAPABILITIES]
@@ -388,7 +410,10 @@ def edit_workspace(
     slug: str = typer.Argument(..., help="The workspace to change"),
     name: Optional[str] = typer.Option(None, "--name", help="New display name"),
     kind: Optional[str] = typer.Option(
-        None, "--kind", help="genai, ml or deploy — which console rail and home page this workspace shows; it never changes what the workspace can do"
+        None,
+        "--kind",
+        help="agents, genai, ml or deploy — which console rail and home page this workspace shows; "
+        "it never changes what the workspace can do",
     ),
     capabilities: Optional[str] = typer.Option(
         None,
@@ -435,8 +460,8 @@ def edit_workspace(
     if name is not None:
         payload["display_name"] = name
     if kind is not None:
-        if kind not in ("ml", "genai", "deploy"):
-            console.print("[red]Error:[/red] --kind must be genai, ml or deploy")
+        if kind not in ("ml", "genai", "deploy", "agents"):
+            console.print("[red]Error:[/red] --kind must be agents, genai, ml or deploy")
             raise typer.Exit(1)
         payload["kind"] = kind
     if capabilities is not None:

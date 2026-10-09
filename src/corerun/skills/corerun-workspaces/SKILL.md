@@ -158,6 +158,7 @@ corerun clusters add <name>            # prints the manifest to apply
 corerun clusters manifest <name>       # that manifest again, as it stands now
 corerun clusters rm <name>
 corerun hosts add <name>               # bare metal; prints an installer
+corerun hosts add <name> --runtime docker   # on the Docker already there, not Incus
 corerun hosts rm <name>
 corerun clusters scope <name> --organization          # share with every workspace
 corerun clusters scope <name> --workspace-only <ws>   # give to one workspace

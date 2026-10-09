@@ -7,6 +7,11 @@ became permanent, and the symptom appeared much later somewhere unrelated: a
 sign-in opening the wrong host long after the export was forgotten.
 """
 
+import os
+import stat
+
+import pytest
+
 from corerun.config import Config
 
 
@@ -50,3 +55,22 @@ def test_env_sourced_workspace_is_not_written_back(tmp_path):
     config.save(cfg)
 
     assert "workspace=ws-1" in cfg.read_text()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_the_saved_tokens_are_readable_by_their_owner_alone(tmp_path):
+    old = os.umask(0o022)
+    try:
+        path = tmp_path / ".corerun" / "config"
+        cfg = Config(api_url="https://example.test/api/v1", auth_token="secret-token")
+        cfg.refresh_token = "secret-refresh"
+        cfg.save(path)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        # A file an older CLI left world-readable is replaced by one that is not.
+        path.chmod(0o644)
+        cfg.save(path)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert "secret-token" in path.read_text()
+    finally:
+        os.umask(old)

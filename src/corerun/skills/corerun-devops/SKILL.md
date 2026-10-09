@@ -149,6 +149,7 @@ corerun clusters add gpu-east --arch amd64 --gpu h100 --tenant-wide > gpu-east.y
 kubectl --context gpu-east apply -f gpu-east.yaml
 
 corerun hosts add dgx01 --gpu gb10 --tenant-wide
+corerun hosts add box01 --runtime docker   # Docker Engine (+ NVIDIA Container Toolkit for GPUs) instead of Incus
 ```
 
 `--gpu` names the cards -- a family (`hopper`) or a card (`h100`); check
@@ -167,6 +168,58 @@ corerun clusters rm gpu-east --tenant-wide
 A remote cluster needs this install's public address for its operator
 (`wss://<domain>/operators`). If an operator never connects, check that
 address from the remote side first.
+
+### Agents' network on connected compute
+
+An agent's sandbox reaches the network only through an egress proxy that
+decides each connection by the agent's network rules (`corerun-agents`). The
+cluster the install runs in has one (`egress.enabled`, on by default). On
+other compute:
+
+- **A Kubernetes cluster**: the cluster-operator chart runs one beside the
+  operator. It is off by default; turn it on with
+  `--set egress.enabled=true --set egress.platformUrl=https://<this install's address>`.
+  It needs the agent runtime to be gVisor; an agent whose sandbox cannot be
+  confined is not started there.
+- **A bare-metal host**: nothing to install. Once the platform sends the host
+  its agents' network rules, the operator fetches the proxy from this install
+  with its own token, checks it, and runs it on the Incus bridge's address;
+  every agent sandbox's NIC then carries an Incus ACL allowing that address
+  and nothing else. Until the proxy runs, an agent's sandbox is refused there
+  ("this host's egress proxy for agents is not running yet") rather than
+  started with an open network. Other notebooks are untouched.
+
+On a host, the operator's log says what happened, lines starting `[Egress]`
+(`journalctl -u corerun-host-operator | grep Egress`), and the proxy logs each
+decision as a JSON line with `CANONICAL-PROXY`.
+
+### MCP servers run from images
+
+A custom MCP server run from an image (`corerun mcp-servers run`, or the
+console) is a container on one of the organisation's computes, started by
+the platform's bridge (`corerun-agentd mcp`) and reached by agents only
+through toolgate and the hub. A compute offers it when its operator says so,
+which takes:
+
+- **A host**: an operator from this release (`sudo corerun-host-operator
+  upgrade`) and its egress proxy running (above). The operator fetches the
+  bridge from this install as it fetches the proxy, and copies it into each
+  server's container; the image itself is not changed.
+- **A Kubernetes cluster**: the cluster operator from this release with
+  `egress.enabled=true`. The bridge comes from the agent image, through an
+  init container.
+
+The server reaches the network only through the egress proxy's port for
+servers, **3129** (agents' sandboxes use 3128), with a pass of its own the
+platform renews every five minutes; anything but the hosts and databases its
+version names is refused and recorded (`mcp_server.network.*`, category
+`agent_network`). The chart's NetworkPolicy and the hosts' ACL and firewall
+chain open 3129 beside 3128. On premises, it is the **egress proxy** that
+connects to a server's database or API, so a firewall between them must allow
+the proxy's address -- the server's own container never reaches it directly.
+Its token or password is kept encrypted by the platform and given to the
+container as a Kubernetes Secret or the instance's environment; it is never in
+a version, a log or an answer.
 
 ### Keeping operators up to date
 
@@ -279,11 +332,14 @@ helm upgrade corerun oci://ghcr.io/corerun-ai/charts/corerun -n corerun -f value
 ```
 
 Dashboards land in a **corerun** folder: platform (start here), capacity,
-gatekeeper, hub, credentials, registry, object storage, trace a request.
+gatekeeper, hub, credentials, registry, object storage, agents (sandboxes,
+tools, custom MCP servers and the egress proxy), trace a request.
 
 The chart ships its alert rules as a PrometheusRule: pods down or restarting,
 gateway errors, authorization failing, a cluster disconnected, the
-break-glass used, a refresh token reused, background tasks stalled, the
+break-glass used, a refresh token reused, toolgate or the egress proxy unable
+to read their rules, agents' sandboxes not starting, a published custom MCP
+server down or its passes not renewing, background tasks stalled, the
 database volume filling, a backup that has not succeeded in 36 hours, and audit
 events dropped on the way to the trail or a SIEM.
 Where they are sent is Alertmanager's receiver:
@@ -297,14 +353,19 @@ ALERT_WEBHOOK_URL=https://… ALERT_EMAIL_TO=oncall@example.com \
 **Audit and SIEM.** Every change, sign-in and refused request is one JSON line
 on the API's stdout with `"log":"audit"` (any log shipper picks it up with no
 configuration), a row the organisation reads under Organization → Audit, and --
-when the install names one -- an event at the site's SIEM:
+when the install names one -- an event at the site's SIEM, sent by
+corerun-agentguard from the stored trail (a SIEM that was down is sent what it
+missed):
 
 ```yaml
 audit:
-  syslog: {address: siem.example.com:6514, transport: tcp+tls, format: cef}
-  webhook: {url: https://splunk.example.com:8088/services/collector/raw, existingSecret: audit-webhook}
+  syslog: {address: siem.example.com:6514, transport: tcp+tls, format: ocsf}   # json, ocsf or cef
+  webhook: {url: https://splunk.example.com:8088/services/collector/raw, format: ocsf, existingSecret: audit-webhook}
   retentionDays: 365
 ```
+
+A SIEM that seems to receive nothing: `kubectl logs -n corerun deploy/corerun-agentguard`
+(lines `[export]`) and `corerun_agentguard_export_behind_seconds`.
 
 Each organisation can add its own destinations too (`corerun org audit add`).
 
@@ -323,6 +384,11 @@ dashboard, or grep every service's logs for it.
 | Pods in `ImagePullBackOff`, "manifest unknown" | The tag does not exist in the registry or the mirror |
 | New work refused, running work fine | The licence: `corerun org license show` |
 | A cluster shows disconnected | Its operator's logs: `kubectl logs -n corerun -l app=corerun-cluster-operator` on that cluster |
+| An agent's sandbox is refused on a host, "egress proxy … not running yet" | The host's `[Egress]` log lines: the proxy could not be fetched (the host cannot reach this install's address) or not started. The operator keeps retrying, backing off to every five minutes |
+| An agent cannot download something | Not the install: `corerun agents network <agent>` lists what the proxy refused; allowing a host is the agent's creator's choice |
+| A compute is not offered for MCP servers, "cannot run MCP servers from images" | Its operator is older than this release (a host: `sudo corerun-host-operator upgrade`), or a cluster's operator runs without `egress.enabled` |
+| A custom MCP server stays "pending" or fails | `corerun mcp-servers get <name>` shows the workload's error. An image that will not pull: the compute cannot reach its registry, or the tag moved (versions are pinned by digest). Exits at once: the command or a setting is wrong, or a secret has no value. On a host, the operator's journal; on a cluster, `kubectl logs` of its pod, `corerun-nb-mcp-<the first 8 of the server's id>-v<version>-…` (`get` shows the id; the bridge's lines start `agentd mcp:`, the server's own stderr follows) |
+| A custom MCP server runs but its calls fail, "connection refused" or 403 from the proxy | The destination is not one its version names, or an organisation or workspace rule denies it: `corerun org audit --category agent_network --action mcp_server.network`. Its pass may have lapsed: the agents dashboard's **Passes to the egress proxy** panel, and the agents service's `[MCPServers]` log lines |
 | Object store pod crash-loops | ObjectIO needs io_uring; the node's seccomp must allow it |
 | Console blank after an upgrade | Browser cache of the previous bundle; hard-reload |
 

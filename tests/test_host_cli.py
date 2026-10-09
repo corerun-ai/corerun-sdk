@@ -186,3 +186,15 @@ def test_an_undeclared_host_sends_no_family(wire):
 
     body = json.loads(wire["seen"][0].content)
     assert "accelerator_family" not in body
+
+
+def test_a_host_can_run_its_workloads_with_docker(wire):
+    result = runner.invoke(app, ["host", "add", "gpu-box", "--runtime", "docker"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(wire["seen"][0].content)["runtime"] == "docker"
+
+
+def test_an_unsaid_runtime_is_left_to_the_platform(wire):
+    result = runner.invoke(app, ["host", "add", "dgx1"])
+    assert result.exit_code == 0, result.output
+    assert "runtime" not in json.loads(wire["seen"][0].content)

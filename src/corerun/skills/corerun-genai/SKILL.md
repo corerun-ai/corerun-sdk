@@ -43,7 +43,7 @@ application already speaks it:
 
 ```bash
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://<host>/v1/traces
-export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer $CORERUN_API_KEY"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer $CORERUN_TOKEN"
 export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
 export OTEL_SERVICE_NAME=<the experiment's name>
 ```

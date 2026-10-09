@@ -251,36 +251,23 @@ def test_nowhere_to_call_an_endpoint_says_which_setting_to_set(monkeypatch):
 
 
 def test_the_inference_address_follows_the_api_address():
-    """The deployment's own layout: `corerun.ai` for production and
-    `dev.corerun.ai` for dev, with the console at `console.` and the gateway
-    at `api.` under each. The API is reached at the domain or at the console's
-    host, and the gateway is the same from both -- api.dev.corerun.ai is the
-    address the dev deployment serves endpoints from, which is what makes this
-    the shape to build."""
+    """The platform serves endpoints under /inference on the host its API is
+    on, on every deployment, so that is the fallback: an address that exists
+    wherever the API does, rather than an `api.` name beside the console that
+    a deployment may never have published (the hosted edition retired its own
+    in October 2026)."""
     from corerun.config import inference_base_from
 
-    assert inference_base_from("https://corerun.ai/api/v1") == "https://api.corerun.ai"
-    assert inference_base_from("https://dev.corerun.ai/api/v1") == "https://api.dev.corerun.ai"
-    # Through the console's own host -- what `corerun login` is given and what
-    # a notebook is told -- the gateway is beside the console, not beneath it.
-    assert inference_base_from("https://console.corerun.ai/api/v1") == "https://api.corerun.ai"
-    assert inference_base_from("https://console.dev.corerun.ai/api/v1") == "https://api.dev.corerun.ai"
-    # An API already addressed at the gateway's own name is not prefixed twice.
-    assert inference_base_from("https://api.dev.corerun.ai/api/v1") == "https://api.dev.corerun.ai"
-    # A self-hosted deployment follows the same rule -- which may name a host
-    # nobody published, and is one of the reasons what the platform reports is
-    # trusted first.
-    assert (
-        inference_base_from("http://corerun.example.com/api/v1")
-        == "http://api.corerun.example.com"
-    )
-    # The scheme follows: a deployment on plain HTTP does not become HTTPS.
-    assert inference_base_from("http://corerun.internal/api/v1") == "http://api.corerun.internal"
+    assert inference_base_from("https://corerun.ai/api/v1") == "https://corerun.ai/inference"
+    assert inference_base_from("https://console.dev.corerun.ai/api/v1") == "https://console.dev.corerun.ai/inference"
+    # A self-hosted deployment, a port, a literal address: the same host.
+    assert inference_base_from("http://corerun.example.com/api/v1") == "http://corerun.example.com/inference"
+    assert inference_base_from("http://localhost:8001/api/v1") == "http://localhost:8001/inference"
+    assert inference_base_from("http://192.168.4.50:4455/api/v1") == "http://192.168.4.50:4455/inference"
 
-    # Nothing to build a deployment name from, so nothing is invented.
+    # Nothing to build from, so nothing is invented.
     assert inference_base_from("") == ""
-    assert inference_base_from("http://localhost:8001/api/v1") == ""
-    assert inference_base_from("http://192.168.4.50:4455/api/v1") == ""
+    assert inference_base_from("not a url") == ""
 
 
 def test_a_value_an_older_client_wrote_for_itself_is_not_a_choice(tmp_path):
@@ -299,7 +286,7 @@ def test_a_value_an_older_client_wrote_for_itself_is_not_a_choice(tmp_path):
 
     loaded = Config.from_file(path)
     assert loaded.inference_url == ""
-    assert loaded.inference_base == "https://api.dev.corerun.ai"
+    assert loaded.inference_base == "https://dev.corerun.ai/inference"
 
     # A value somebody chose is kept, and still wins.
     path.write_text("inference_url=https://gateway.internal/inference\n")
@@ -320,7 +307,7 @@ def test_the_derived_inference_address_is_not_written_to_the_file(tmp_path, monk
 
     loaded = config.get_config()
     assert loaded.inference_url == ""
-    assert loaded.inference_base == "https://api.dev.corerun.ai"
+    assert loaded.inference_base == "https://dev.corerun.ai/inference"
 
     loaded.save()
     assert "inference_url" not in (tmp_path / ".corerun" / "config").read_text()

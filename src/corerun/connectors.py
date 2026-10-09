@@ -31,6 +31,10 @@ class Connector(BaseModel):
     description: Optional[str] = None
     kind: str = "mcp"
     url: str = ""
+    #: "internet", or "network": inside the organisation's network, reached
+    #: through ``via`` (a cluster or host), or directly (on-premises)
+    location: str = "internet"
+    via: Optional[str] = None
     auth: str = "none"
     has_secret: bool = False
     #: "workspace" or "organization"
@@ -85,9 +89,15 @@ def create(
     description: Optional[str] = None,
     org: bool = False,
     workspace: Optional[str] = None,
+    location: Optional[str] = None,
+    via: Optional[str] = None,
 ) -> Connector:
     """
     Add a connector. It is checked live before it is kept.
+
+    A server inside the organisation's network: ``location="network"`` with
+    ``via``, the connected cluster or host that reaches it (by name or id) --
+    or ``via=""`` to reach it directly from the platform, on-premises only.
 
     An MCP server needs ``url`` (a public https address) and its ``auth``:
     ``bearer`` with ``token``, ``headers`` with ``headers``, or ``oauth``, where
@@ -105,6 +115,7 @@ def create(
         name=name, kind=kind, url=url, auth=auth, token=token, headers=headers,
         client_id=client_id, client_secret=client_secret, scopes=scopes,
         kubeconfig=kubeconfig, context=context, description=description,
+        location=location, via=via,
     )
     return Connector.model_validate(get_client().post(_base(org), json=body, workspace=workspace))
 

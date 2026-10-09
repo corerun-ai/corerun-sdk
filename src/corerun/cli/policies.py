@@ -17,9 +17,14 @@ from rich.table import Table
 from corerun.cli import output
 
 console = output.console
-app = typer.Typer(help="Policies: what agents may do with their tools")
+app = typer.Typer(
+    help="Policies: what agents may do with their tools, and where they may connect (--network)"
+)
 
 ORG = typer.Option(False, "--org", help="The organisation's policies (organisation administrators)")
+NETWORK = typer.Option(
+    False, "--network", help="Network policies: where agents' sandboxes may connect"
+)
 RULES = typer.Option(..., "--file", "-f", help="YAML: a list of rules, or a mapping with 'rules'", exists=True, dir_okay=False)
 
 
@@ -33,26 +38,30 @@ def _init_client():
         raise typer.Exit(1)
 
 
-def _rules(path: Path) -> list:
+def _kind(network: bool) -> str:
+    return "network" if network else "tools"
+
+
+def _rules(path: Path, network: bool = False) -> list:
     import corerun.policies as policies
 
     try:
-        return policies.load_rules(path.read_text(encoding="utf-8"))
+        return policies.load_rules(path.read_text(encoding="utf-8"), kind=_kind(network))
     except (ValueError, yaml.YAMLError) as e:
         raise output.fail(f"{path}: {e}")
 
 
-def _find(name: str, org: bool):
+def _find(name: str, org: bool, network: bool = False):
     import corerun.policies as policies
 
     try:
-        return policies.find(name, org=org)
+        return policies.find(name, org=org, kind=_kind(network))
     except Exception as e:
         raise output.fail(str(e))
 
 
 @app.command("list")
-def list_policies(org: bool = ORG):
+def list_policies(org: bool = ORG, network: bool = NETWORK):
     """
     The policies that apply here: the organisation's and this workspace's.
 
@@ -63,15 +72,23 @@ def list_policies(org: bool = ORG):
     import corerun.policies as policies
 
     try:
-        found = policies.list(org=org)
+        found = policies.list(org=org, kind=_kind(network))
     except Exception as e:
         raise output.fail(str(e))
 
     def render():
         if not found:
-            console.print("No policies. Agents may only read, unless an agent's own policy says more.")
+            if network:
+                console.print(
+                    "No network policies. Agents' sandboxes reach nothing "
+                    "an agent's own network rules do not allow."
+                )
+            else:
+                console.print(
+                    "No policies. Agents may only read, unless an agent's own policy says more."
+                )
             return
-        table = Table(title="Policies")
+        table = Table(title="Network policies" if network else "Policies")
         table.add_column("Name")
         table.add_column("Level")
         table.add_column("Rules", justify="right")
@@ -85,7 +102,9 @@ def list_policies(org: bool = ORG):
 
 
 @app.command("get")
-def get_policy(name: str = typer.Argument(..., help="Policy name or id"), org: bool = ORG):
+def get_policy(
+    name: str = typer.Argument(..., help="Policy name or id"), org: bool = ORG, network: bool = NETWORK
+):
     """
     Show a policy's rules, as YAML that `create -f` and `update -f` read back.
 
@@ -93,7 +112,7 @@ def get_policy(name: str = typer.Argument(..., help="Policy name or id"), org: b
         corerun policies get careful > careful.yaml
     """
     _init_client()
-    p = _find(name, org)
+    p = _find(name, org, network)
     output.emit(p.model_dump(), lambda: console.print(
         yaml.safe_dump({"rules": p.rules}, sort_keys=False, default_flow_style=False).rstrip(),
         markup=False, highlight=False,
@@ -107,24 +126,29 @@ def create_policy(
     description: Optional[str] = typer.Option(None, "--description", "-d"),
     disabled: bool = typer.Option(False, "--disabled", help="Keep it, but do not apply it yet"),
     org: bool = ORG,
+    network: bool = NETWORK,
 ):
     """
     Add a policy from a YAML file of rules.
 
     A rule: name, effect (allow, ask or deny), match (field: [globs]),
     optionally except and message. Fields: adapter, action, group, resource,
-    subresource, namespace, name, labels, flags, connector, agent.
+    subresource, namespace, name, labels, flags, connector, agent -- or, with
+    --network, host, port, action and agent.
 
     Example:
         corerun policies create careful -f careful.yaml
         corerun policies create guardrails -f guardrails.yaml --org
+        corerun policies create packages -f packages.yaml --network
     """
-    rules = _rules(file)
+    rules = _rules(file, network)
     _init_client()
     import corerun.policies as policies
 
     try:
-        p = policies.create(name, rules, description=description, enabled=not disabled, org=org)
+        p = policies.create(
+            name, rules, description=description, enabled=not disabled, org=org, kind=_kind(network)
+        )
     except Exception as e:
         raise output.fail(str(e))
     output.emit(p.model_dump(), lambda: console.print(f"[green]Added[/green] {p.name} ({p.level}, {len(p.rules)} rules)"))
@@ -138,6 +162,7 @@ def update_policy(
     description: Optional[str] = typer.Option(None, "--description", "-d"),
     enable: Optional[bool] = typer.Option(None, "--enable/--disable", help="Apply it, or keep it without applying"),
     org: bool = ORG,
+    network: bool = NETWORK,
 ):
     """
     Change a policy; what is not given stays.
@@ -146,11 +171,11 @@ def update_policy(
         corerun policies update careful -f careful.yaml
         corerun policies update careful --disable
     """
-    rules = _rules(file) if file else None
+    rules = _rules(file, network) if file else None
     _init_client()
     import corerun.policies as policies
 
-    p = _find(name, org)
+    p = _find(name, org, network)
     try:
         p = policies.update(p.id, name=rename, rules=rules, description=description, enabled=enable, org=org)
     except Exception as e:
@@ -165,6 +190,7 @@ def delete_policy(
     name: str = typer.Argument(..., help="Policy name or id"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask"),
     org: bool = ORG,
+    network: bool = NETWORK,
 ):
     """
     Remove a policy.
@@ -175,7 +201,7 @@ def delete_policy(
     _init_client()
     import corerun.policies as policies
 
-    p = _find(name, org)
+    p = _find(name, org, network)
     if not yes:
         output.confirm(f"Remove the policy {p.name}?")
     try:
@@ -273,3 +299,53 @@ def try_command(
         console.print("[dim]Nothing was sent to a cluster.[/dim]")
 
     output.emit({"request": request, "note": note, **result}, render)
+
+
+_UNMATCHED_WORDS = {
+    "deny": "refused (an allowlist: only what a rule allows)",
+    "ask": "asked about, in the conversation",
+    "allow": "allowed (a blocklist: all but what a rule refuses or asks about)",
+}
+
+
+@app.command("unmatched")
+def unmatched_command(
+    effect: Optional[str] = typer.Argument(
+        None, help="deny, ask or allow; none to say nothing here. Omit to show"
+    ),
+    org: bool = ORG,
+):
+    """
+    What a destination no network rule matches gets, at this level.
+
+    Each level -- the organisation's, the workspace's, an agent's -- may say;
+    the strictest said wins, and nothing said is deny.
+
+    Example:
+        corerun policies unmatched
+        corerun policies unmatched ask
+        corerun policies unmatched deny --org
+    """
+    _init_client()
+    import corerun.policies as policies
+
+    try:
+        if effect is None:
+            answer = policies.unmatched(org=org)
+        else:
+            value = "" if effect == "none" else effect
+            answer = policies.set_unmatched(value, org=org)
+    except ValueError as e:
+        raise output.fail(str(e))
+    except Exception as e:
+        raise output.fail(str(e))
+
+    def render():
+        level = "the organisation" if org else "this workspace"
+        own = answer.get("effect") or "nothing"
+        console.print(f"Said by {level}: {own}")
+        effective = answer.get("effective")
+        words = _UNMATCHED_WORDS.get(effective, effective)
+        console.print(f"A destination no rule matches is {words}.")
+
+    output.emit(answer, render)

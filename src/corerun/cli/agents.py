@@ -182,6 +182,9 @@ def get_agent(
             console.print(f"  Creator: {a.creator_email or a.creator_name}")
         if a.sandbox:
             console.print("  Sandbox: " + ", ".join(f"{k} {v}" for k, v in a.sandbox.items()))
+        if a.network:
+            mode = "rules enforced" if a.network == "enforce" else "reported, not enforced"
+            console.print(f"  Network: {mode}")
         if a.ready is not None:
             console.print(f"  Sandboxes kept ready: {a.ready} (ready now: {a.ready_sandboxes})")
         if a.telemetry and a.telemetry.get("enabled"):
@@ -273,6 +276,10 @@ def update_agent(
     ready: Optional[int] = typer.Option(None, "--ready", min=0, max=5, help="Sandboxes kept warm, 0-5"),
     shell: Optional[str] = typer.Option(None, "--shell", help="Its shell in the sandbox: allow, ask or off"),
     web: Optional[str] = typer.Option(None, "--web", help="Its web access in the sandbox: allow, ask or off"),
+    enforce_network: bool = typer.Option(
+        False, "--enforce-network",
+        help="Enforce its network rules from now on (an older agent only reports); not undone",
+    ),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
@@ -281,6 +288,7 @@ def update_agent(
 
     Example:
         corerun agents update support-bot --instructions-file prompt.md --ready 1
+        corerun agents update support-bot --enforce-network
     """
     _init_client()
     _json(json_output)
@@ -299,6 +307,7 @@ def update_agent(
         "model": model,
         "starters": list(starter) if starter else None,
         "ready": ready,
+        "network": "enforce" if enforce_network else None,
     }
     try:
         if shell is not None or web is not None:
@@ -594,6 +603,102 @@ def telemetry(
     console.print(f"{a.name}: telemetry {state}" + (f", into experiment {where}" if state == "on" and where else ""))
 
 
+@app.command("publish")
+def publish(
+    agent: str = typer.Argument(..., help="Agent name or ID"),
+    as_: str = typer.Option(
+        "itself",
+        "--as",
+        help="itself (a support or SRE agent), me, or the email of the person it acts as",
+    ),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Let an agent answer with nobody signed in -- through your organisation's
+    channels -- as itself or as a person.
+
+    Examples:
+        corerun agents publish support-bot
+        corerun agents publish my-assistant --as me
+        corerun agents publish their-assistant --as someone@example.com
+    """
+    _init_client()
+    import corerun.agents as agents
+
+    resolved = _resolve(agent, workspace)
+    try:
+        if as_ == "itself":
+            pub = agents.publish(resolved, mode="service", workspace=workspace)
+        else:
+            delegate = None
+            if as_ != "me":
+                people = agents.access(resolved, workspace=workspace).get("people") or []
+                match = [p for p in people if (p.get("email") or "").lower() == as_.lower()]
+                if not match:
+                    raise output.fail(
+                        f"{as_} cannot use {agent}: give it to them first (corerun agents grant)."
+                    )
+                delegate = match[0]["user_id"]
+            pub = agents.publish(
+                resolved, mode="delegate", delegate_id=delegate, workspace=workspace
+            )
+    except typer.Exit:
+        raise
+    except Exception as e:
+        raise _fail(e)
+    console.print(f"{agent}: {_publication_status(pub)}")
+
+
+@app.command("publication")
+def publication(
+    agent: str = typer.Argument(..., help="Agent name or ID"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Whether an agent is published, and as whom it answers.
+    """
+    _init_client()
+    import corerun.agents as agents
+
+    try:
+        pub = agents.publication(_resolve(agent, workspace), workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+    console.print(f"{agent}: {_publication_status(pub)}")
+
+
+@app.command("unpublish")
+def unpublish(
+    agent: str = typer.Argument(..., help="Agent name or ID"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Stop an agent answering with nobody signed in. An agent published as
+    itself loses its own account.
+    """
+    _init_client()
+    import corerun.agents as agents
+
+    try:
+        agents.unpublish(_resolve(agent, workspace), workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+    console.print(f"{agent}: unpublished")
+
+
+def _publication_status(pub: dict) -> str:
+    if not pub.get("published"):
+        return "not published"
+    if pub.get("waiting") == "switched_off":
+        return "published, switched off"
+    who = pub.get("delegate_name") or pub.get("delegate_email") or "them"
+    if pub.get("waiting") == "delegate_confirmation":
+        return f"published as {who}, waiting for them to say so in the console"
+    if pub.get("mode") == "delegate":
+        return f"answers as {who}"
+    return "answers as itself"
+
+
 # ── tools and policy ────────────────────────────────────────────────────────
 
 
@@ -726,6 +831,9 @@ def set_tools(
 @app.command("policy")
 def show_policy(
     agent: str = typer.Argument(..., help="Agent name or ID"),
+    network: bool = typer.Option(
+        False, "--network", help="Its network rules: where its sandbox may connect"
+    ),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
@@ -744,7 +852,8 @@ def show_policy(
 
     resolved = _resolve(agent, workspace)
     try:
-        answer = agents.policy(resolved, workspace=workspace)
+        kind = "network" if network else "tools"
+        answer = agents.policy(resolved, workspace=workspace, kind=kind)
     except Exception as e:
         raise _fail(e)
 
@@ -775,6 +884,9 @@ def set_policy(
     agent: str = typer.Argument(..., help="Agent name or ID"),
     file: Optional[Path] = typer.Option(None, "--file", "-f", help="YAML: a list of rules, or rules: [...]"),
     default: bool = typer.Option(False, "--default", help="Drop its own rules and go back to the default (reads only)"),
+    network: bool = typer.Option(
+        False, "--network", help="Its network rules (host, port, action, agent)"
+    ),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
 ):
     """
@@ -782,10 +894,12 @@ def set_policy(
 
     A rule is name, effect (allow, ask or deny), and match/except on action,
     group, resource, subresource, namespace, name, labels, flags, connector
-    or agent -- each a list of globs.
+    or agent -- each a list of globs. With --network: host, port, action and
+    agent.
 
     Example:
         corerun agents policy-set sre-bot -f rules.yaml
+        corerun agents policy-set sre-bot -f network.yaml --network
     """
     _init_client()
     import corerun.agents as agents
@@ -795,13 +909,368 @@ def set_policy(
     rules = [] if default else _read_rules(file)
     resolved = _resolve(agent, workspace)
     try:
-        answer = agents.set_policy(resolved, rules, workspace=workspace)
+        kind = "network" if network else "tools"
+        answer = agents.set_policy(resolved, rules, workspace=workspace, kind=kind)
     except Exception as e:
         raise _fail(e)
     if answer.get("default") or not rules:
-        console.print(f"{agent}: the default policy (reads only)")
+        console.print(
+            f"{agent}: no network rules of its own (the organisation's and workspace's apply)"
+            if network else f"{agent}: the default policy (reads only)"
+        )
     else:
         console.print(f"{agent}: {len(answer.get('rules') or rules)} rule(s)")
+
+
+@app.command("network")
+def network_refused(
+    agent: str = typer.Argument(..., help="Agent name or ID"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Where an agent was refused on the network in the last seven days.
+
+    Each is a host and port the egress proxy refused (or, for an agent still
+    reporting, would have). Allow one with `corerun agents network-allow`.
+
+    Example:
+        corerun agents network support-bot
+    """
+    _init_client()
+    _json(json_output)
+    import corerun.agents as agents
+
+    resolved = _resolve(agent, workspace)
+    try:
+        a = agents.get(resolved, workspace=workspace)
+        found = agents.network_refused(resolved, workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+
+    def render():
+        mode = "enforced" if a.network == "enforce" else "reported, not enforced"
+        console.print(f"{a.name}: network rules {mode}")
+        if not found:
+            console.print("Nothing refused in the last seven days.")
+            return
+        table = Table(title="Refused recently")
+        table.add_column("Destination")
+        table.add_column("Times", justify="right")
+        table.add_column("Last")
+        for d in found:
+            dest = f"{d['host']}:{d['port']}" + (" [dim](would be)[/dim]" if d.get("would") else "")
+            last = str(d.get("last", ""))[:19].replace("T", " ")
+            table.add_row(dest, str(d.get("times", "")), last)
+        console.print(table)
+
+    output.emit(found, render)
+
+
+@app.command("activity")
+def activity(
+    agent: str = typer.Argument(..., help="Agent name or ID"),
+    since: str = typer.Option("24h", "--since", help="24h, 7d or 30d"),
+    person: Optional[str] = typer.Option(
+        None, "--person", help="One person's use of it: their account id"
+    ),
+    timeline: bool = typer.Option(
+        False, "--timeline", help="Every event, newest first, instead of by destination"
+    ),
+    category: Optional[List[str]] = typer.Option(
+        None,
+        "--category",
+        "-c",
+        help="With --timeline: agent_network, agent_tools, agent_approvals, agent_files, "
+        "agent_sandboxes or agent_changes (repeatable)",
+    ),
+    csv_file: Optional[str] = typer.Option(None, "--csv", help="Write it to this CSV file instead"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    What an agent did, for whoever manages it: where it connected, by
+    destination with the traffic and the rule that decided -- or, with
+    --timeline, its connections, tools, approvals, files, sandboxes and the
+    changes made to it. No conversation text is recorded.
+
+    Example:
+        corerun agents activity support-bot --since 7d
+        corerun agents activity support-bot --timeline -c agent_tools -c agent_changes
+    """
+    _init_client()
+    _json(json_output)
+    import corerun.agents as agents
+
+    resolved = _resolve(agent, workspace)
+    view = "timeline" if timeline else "network"
+    try:
+        if csv_file:
+            text = agents.activity_csv(
+                resolved,
+                view=view,
+                since=since,
+                person=person,
+                category=category,
+                workspace=workspace,
+            )
+            with open(csv_file, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            console.print(f"Wrote {max(text.count(chr(10)) - 1, 0)} rows to {csv_file}")
+            return
+        if timeline:
+            found = agents.activity_timeline(
+                resolved, since=since, person=person, category=category, workspace=workspace
+            )
+        else:
+            found = agents.activity(resolved, since=since, person=person, workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+
+    def size(n) -> str:
+        n = float(n or 0)
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024 or unit == "GB":
+                return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+            n /= 1024
+        return ""
+
+    def render_network():
+        s = found.get("summary") or {}
+        console.print(
+            f"{s.get('connections', 0)} connections, {s.get('refused', 0)} refused, "
+            f"{s.get('asked', 0)} asked; "
+            f"{size(s.get('bytes_out'))} sent, {size(s.get('bytes_in'))} received"
+        )
+        rows = found.get("destinations") or []
+        if not rows:
+            console.print("No connections in this period.")
+            return
+        table = Table()
+        for col in ("Destination", "Decisions", "Decided by", "Sent", "Received", "Last"):
+            table.add_column(col, justify="right" if col in ("Sent", "Received") else "left")
+        for d in rows:
+            decisions = ", ".join(
+                f"{label} {d[k]}"
+                for k, label in (
+                    ("reached", "reached"),
+                    ("refused", "refused"),
+                    ("would_refuse", "would refuse"),
+                    ("asked", "asked"),
+                    ("approved", "approved"),
+                    ("refused_by_person", "refused by a person"),
+                )
+                if d.get(k)
+            )
+            dest = f"{d['host']}:{d['port']}"
+            if d.get("workaround"):
+                dest += " [yellow](looks like a workaround)[/yellow]"
+            if d.get("sent_more"):
+                dest += " [yellow](sent more than received)[/yellow]"
+            table.add_row(
+                dest,
+                decisions,
+                d.get("decided_by") or "-",
+                size(d.get("bytes_out")),
+                size(d.get("bytes_in")),
+                str(d.get("last", ""))[:19].replace("T", " "),
+            )
+        console.print(table)
+
+    def render_timeline():
+        events = found.get("events") or []
+        if not events:
+            console.print("Nothing recorded in this period.")
+            return
+        table = Table()
+        for col in ("When", "Who", "What", "Outcome", "Detail"):
+            table.add_column(col)
+        for ev in events:
+            target = str(ev.get("target") or "")
+            if target.startswith("agents/"):
+                target = target.split("/", 2)[-1]
+            table.add_row(
+                str(ev.get("at", ""))[:19].replace("T", " "),
+                ev.get("actor_email") or ev.get("actor_id") or "-",
+                f"{ev.get('action', '')}\n[dim]{target}[/dim]",
+                ev.get("outcome", ""),
+                ev.get("reason") or "",
+            )
+        console.print(table)
+        if found.get("next_before"):
+            console.print(
+                "[dim]More: narrow with --since/--category, or write them all with --csv.[/dim]"
+            )
+
+    output.emit(found, render_timeline if timeline else render_network)
+
+
+@app.command("network-unmatched")
+def network_unmatched(
+    agent: str = typer.Argument(..., help="Agent name or ID"),
+    effect: Optional[str] = typer.Argument(
+        None, help="deny, ask or allow; none to leave it to the levels above. Omit to show"
+    ),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    What a destination none of an agent's network rules match gets.
+
+    deny is an allowlist, ask puts it to the person in the conversation, allow
+    is a blocklist. The organisation's and workspace's say counts too: the
+    strictest said wins, and nothing said is deny.
+
+    Example:
+        corerun agents network-unmatched support-bot
+        corerun agents network-unmatched support-bot ask
+    """
+    _init_client()
+    _json(json_output)
+    import corerun.agents as agents
+
+    resolved = _resolve(agent, workspace)
+    try:
+        if effect is None:
+            answer = agents.network_unmatched(resolved, workspace=workspace)
+        else:
+            value = "" if effect == "none" else effect
+            answer = agents.set_network_unmatched(resolved, value, workspace=workspace)
+    except ValueError as e:
+        raise output.fail(str(e))
+    except Exception as e:
+        raise _fail(e)
+
+    def render():
+        levels = answer.get("levels") or {}
+        said = ", ".join(f"{k} {v}" for k, v in levels.items() if v) or "nothing"
+        effective = answer.get("effective")
+        console.print(f"{agent}: a destination no rule matches is {effective} (said: {said})")
+
+    output.emit(answer, render)
+
+
+@app.command("network-allow")
+def network_allow(
+    agent: str = typer.Argument(..., help="Agent name or ID"),
+    destination: str = typer.Argument(
+        ..., help="host or host:port, e.g. pypi.org or api.example.com:8443"
+    ),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Allow an agent one destination: a rule added to its own network rules.
+
+    The port defaults to 443. The organisation's and workspace's deny rules
+    still win, and the platform's floor (private and metadata addresses) is
+    never lifted.
+
+    Example:
+        corerun agents network-allow support-bot pypi.org
+    """
+    host, _, port = destination.strip().lower().partition(":")
+    if not host:
+        raise output.fail("Name a host, e.g. pypi.org or api.example.com:8443.")
+    _init_client()
+    import corerun.agents as agents
+
+    resolved = _resolve(agent, workspace)
+    try:
+        agents.allow_network(resolved, host, port or "443", workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+    console.print(f"{agent}: [green]allowed[/green] {host}:{port or '443'}")
+
+
+@app.command("asks")
+def list_asks(
+    waiting: bool = typer.Option(False, "--waiting", help="Only the ones still waiting for you"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    What your agents asked you before going ahead, waiting and recently
+    answered. Answer them in the console's Approvals page or the chat.
+
+    Example:
+        corerun agents asks --waiting
+    """
+    _init_client()
+    _json(json_output)
+    import corerun.agents as agents
+
+    try:
+        found = agents.asks(pending=waiting, workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+
+    def render():
+        if not found:
+            console.print("Nothing is waiting for you." if waiting else "No asks in the last seven days.")
+            return
+        for a in found:
+            console.print(f"  [{a.get('status', '')}] {a.get('title', '')}  [dim]{a.get('agent_id', '')[:8]} · {a.get('created_at', '')[:19]}[/dim]")
+
+    output.emit(found, render)
+
+
+@app.command("sandboxes")
+def list_sandboxes(
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """
+    Where this workspace's agents run: your own sandboxes, or everyone's and
+    the ready ones for its administrators.
+
+    Example:
+        corerun agents sandboxes
+    """
+    _init_client()
+    _json(json_output)
+    import corerun.agents as agents
+
+    try:
+        found = agents.sandboxes(workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+
+    def render():
+        boxes = found.get("sandboxes") or []
+        if not boxes:
+            console.print("No sandboxes are running.")
+            return
+        for b in boxes:
+            who = "ready" if b.get("ready") else (b.get("owner_email") or b.get("owner_name") or "")
+            console.print(
+                f"  {b.get('agent_name', '')}  {who}  {b.get('status', '')}  {b.get('compute', '')}  "
+                f"[dim]{b.get('notebook_id', '')}[/dim]"
+            )
+        console.print(f"[dim]{found.get('running', 0)} in use, {found.get('ready', 0)} ready[/dim]")
+
+    output.emit(found, render)
+
+
+@app.command("sandbox-stop")
+def stop_sandbox(
+    sandbox: str = typer.Argument(..., help="The sandbox's id, from 'corerun agents sandboxes'"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Stop an agent sandbox: your own, or -- for a workspace administrator --
+    anyone's, which is recorded. Its person's files and history stay.
+
+    Example:
+        corerun agents sandbox-stop 6f1aa7e5-f1e1-42d8-a7d3-26e31f422413
+    """
+    _init_client()
+    import corerun.agents as agents
+
+    try:
+        agents.stop_sandbox(sandbox, workspace=workspace)
+    except Exception as e:
+        raise _fail(e)
+    console.print(f"[green]Stopped[/green] {sandbox}")
 
 
 @app.command("consents")

@@ -11,7 +11,6 @@ The platform credential is last so that anything the user chose themselves —
 `corerun login`, an explicit key — wins over the one the notebook was handed.
 """
 
-import ipaddress
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,52 +47,27 @@ DEFAULT_INFERENCE_URL = ""
 LEGACY_INFERENCE_URL = "https://api.corerun.ai"
 
 
-def _is_address(host: str) -> bool:
-    """Whether a host is a literal address rather than a name."""
-    try:
-        ipaddress.ip_address(host)
-        return True
-    except ValueError:
-        return False
-
-
 def inference_base_from(api_url: str) -> str:
-    """Where a deployment publishes its model endpoints, given its API address.
+    """Where a deployment serves its model endpoints, given its API address.
 
-    A deployment's domain is ``corerun.ai`` for production and
-    ``dev.corerun.ai`` for an environment that is named; the console is
-    ``console`` under it and the gateway is ``api`` under it. The API is
-    reached at either the domain itself or the console's host, and the
-    gateway is ``api.corerun.ai`` or ``api.dev.corerun.ai`` from both. That is
-    the address the deployment's own configuration reaches for, so it is what
-    an override should start from.
+    The platform serves every endpoint under ``/inference`` on the same host as
+    its API, on every deployment: that address exists wherever the API does.
+    An ``api.`` name beside the console was guessed here once, and it named a
+    host that a deployment may never have published -- the hosted edition
+    retired its own in October 2026 for the edge's addresses, which the
+    platform reports itself.
 
-    Empty when there is nothing to build from -- a bare name, a single label, a
-    literal address -- because a guess at one of those names a host that was
-    never published, which fails in a way the reader cannot tell from a
-    deployment that is simply down.
+    Used only where the platform reports nothing, so it is the fallback, not
+    the published address.
+
+    Empty when there is no API address to build from.
     """
     parts = urlsplit(api_url or "")
-    host = parts.hostname or ""
-    labels = host.split(".")
-
-    if len(labels) < 2 or _is_address(host):
+    host = parts.netloc
+    if not parts.hostname:
         return ""
-
     scheme = parts.scheme or "https"
-
-    # Already the gateway's own name: one host serving both, so there is no
-    # second name to build -- and prefixing it again would invent one.
-    if labels[0].startswith("api"):
-        return f"{scheme}://{host}"
-
-    # The console's host is the domain with a `console` label in front, and
-    # the gateway is the same domain with `api` in front -- not `api` in front
-    # of the console.
-    if labels[0] == "console" and len(labels) >= 3:
-        host = ".".join(labels[1:])
-
-    return f"{scheme}://api.{host}"
+    return f"{scheme}://{host}/inference"
 
 
 @dataclass
@@ -213,7 +187,11 @@ class Config:
         if path is None:
             path = Path.home() / ".corerun" / "config"
 
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # The file holds the session's tokens: readable by its owner alone,
+        # in a folder only its owner can list, whatever the umask says.
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if path.parent.name == ".corerun":
+            os.chmod(path.parent, 0o700)
 
         # Anything the environment supplied keeps whatever the file already
         # said, so saving preserves the setting rather than overwriting it.
@@ -226,7 +204,9 @@ class Config:
         workspace = stored.workspace if "workspace" in self.env_only else self.workspace
 
         pending = path.with_name(path.name + ".new")
-        with open(pending, "w") as f:
+        if pending.exists():
+            pending.unlink()
+        with os.fdopen(os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
             if auth_token:
                 f.write(f"auth_token={auth_token}\n")
             if self.refresh_token:

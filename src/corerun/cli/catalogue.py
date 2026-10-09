@@ -382,3 +382,115 @@ def check_model(
     output.emit(verdict, render)
     if not verdict.get("compatible"):
         raise typer.Exit(1)
+
+
+@app.command("fit")
+def fit(
+    search: Optional[str] = typer.Option(
+        None, "--search", "-s", help="Only models whose name or id has this",
+    ),
+    fits_only: bool = typer.Option(False, "--fits", help="Only builds that fit a compute here"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Which catalogue builds fit this workspace's computes, and which are published.
+
+    One row per build -- one per model and quantization, in the standard
+    publisher order -- with the publisher's card count for each compute's card
+    against the cards it has. "?" is a card the publisher gives no figure for.
+
+    Example:
+        corerun catalogue fit --search qwen --fits
+    """
+    _init_client()
+
+    import corerun.inference as inference
+
+    try:
+        data = inference.catalogue_fit(workspace=workspace)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    if output.json_mode():
+        output.emit(data)
+        return
+
+    computes = [c["name"] for c in data.get("computes") or []]
+    table = Table(title="Catalogue builds on this workspace's compute")
+    # Folded, never cut: the slug is what `catalogue publish` takes.
+    table.add_column("Build (slug)", style="cyan", overflow="fold")
+    table.add_column("Model ID", overflow="fold")
+    table.add_column("Quant")
+    for name in computes:
+        table.add_column(name, justify="center")
+    table.add_column("Published as", overflow="fold")
+    q = (search or "").lower()
+    shown = 0
+    for model in data.get("models") or []:
+        for build in model.get("builds") or []:
+            if q and q not in f"{model.get('name', '')} {build.get('external_id', '')}".lower():
+                continue
+            verdicts = {f["compute"]: f for f in build.get("fit") or []}
+            if fits_only and not any(f.get("verdict") == "fits" for f in verdicts.values()):
+                continue
+            cells = []
+            for name in computes:
+                f = verdicts.get(name) or {}
+                cells.append({
+                    "fits": f"[green]{f.get('cards')} card(s)[/green]",
+                    "short": f"[yellow]needs {f.get('cards')}[/yellow]",
+                }.get(f.get("verdict"), "[dim]?[/dim]"))
+            table.add_row(
+                build.get("slug", ""), build.get("external_id", ""),
+                build.get("quantization") or "bf16", *cells, build.get("published_as") or "",
+            )
+            shown += 1
+    if shown == 0:
+        console.print("Nothing in the catalogue matches.")
+        return
+    console.print(table)
+    console.print("[dim]Publish one: corerun catalogue publish <slug> [--as NAME][/dim]")
+
+
+@app.command("publish")
+def publish(
+    reference: str = typer.Argument(
+        ..., metavar="SLUG|MODEL_ID", help="The catalogue build to publish",
+    ),
+    as_name: Optional[str] = typer.Option(
+        None, "--as", help="Its name in the registry (the slug by default)",
+    ),
+    description: Optional[str] = typer.Option(
+        None, "--description", help="Defaults to the catalogue's",
+    ),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    Publish a catalogue build into this workspace's model registry.
+
+    A remote version: the weights stay where the catalogue says and are fetched
+    when it is deployed; it carries the catalogue's facts and recipe.
+    Administrators of the workspace or organisation, on a plan with model
+    publishing (on the hosted Free plan the platform publishes them).
+
+    Example:
+        corerun catalogue publish qwen3-8-27b-nvfp4 --as qwen38
+        corerun inference deploy --name qwen --source registry --model qwen38 --compute gb10dgx01
+    """
+    _init_client()
+
+    import corerun.inference as inference
+
+    try:
+        version = inference.publish_from_catalogue(reference, name=as_name, description=description,
+                                                   workspace=workspace)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    if output.json_mode():
+        output.emit(version)
+        return
+    console.print(
+        f"[green]Published[/green] {version.get('model_name')} v{version.get('version')} "
+        f"[dim](weights: {version.get('weights_ref') or version.get('source')})[/dim]"
+    )

@@ -7,7 +7,7 @@ it, which is the only way to know the whole path works.
 """
 
 import sys
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.table import Table
@@ -392,6 +392,51 @@ def metrics(
     output.emit(answer, render)
 
 
+@app.command("share")
+def share(
+    name: str = typer.Argument(..., help="Endpoint name"),
+    organization: bool = typer.Option(False, "--organization", help="Every workspace in the organisation"),
+    workspaces: Optional[List[str]] = typer.Option(None, "--with", help="A workspace, by slug, name or ID; repeatable"),
+    private: bool = typer.Option(False, "--private", help="Its own workspace only"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w"),
+):
+    """
+    Who besides its own workspace may use an endpoint. Without an option,
+    shows how it is shared now.
+
+    corerun endpoints share chat --organization
+    corerun endpoints share chat --with research --with support-bots
+    corerun endpoints share chat --private
+    """
+    _init_client()
+    import corerun.endpoints as endpoints
+
+    chosen = [w for w in (workspaces or []) if w]
+    if sum([organization, bool(chosen), private]) > 1:
+        raise output.fail("Choose one of --organization, --with or --private")
+
+    if organization or chosen or private:
+        scope = "organization" if organization else "workspaces" if chosen else "workspace"
+        try:
+            result = endpoints.share(name, scope, chosen, workspace=workspace)
+        except ValueError as e:
+            raise output.fail(str(e))
+    else:
+        result = endpoints.sharing(name, workspace=workspace).get("sharing", {})
+
+    def render():
+        s = result.get("scope")
+        if s == "organization":
+            console.print(f"{name}: every workspace in the organisation")
+        elif s == "workspaces":
+            names = ", ".join(w.get("display_name") or w.get("slug") for w in result.get("workspaces", []))
+            console.print(f"{name}: this workspace and {names}")
+        else:
+            console.print(f"{name}: this workspace only")
+
+    output.emit(result, render)
+
+
 @app.command("rotate-key")
 def rotate_key(
     name: str = typer.Argument(..., help="Endpoint name"),
@@ -434,8 +479,7 @@ def models(
     try:
         served = endpoints.models(name, workspace=workspace)
     except Exception as e:  # noqa: BLE001 — the reason matters more than the type
-        output.fail(f"The endpoint did not answer: {e}")
-        return
+        raise output.fail(f"The endpoint did not answer: {e}")
 
     def render():
         if not served:
@@ -512,8 +556,7 @@ def call(
             name, model, prompt, max_tokens=max_tokens, workspace=workspace
         )
     except Exception as e:  # noqa: BLE001
-        output.fail(f"The call failed: {e}")
-        return
+        raise output.fail(f"The call failed: {e}")
 
     output.emit({"reply": reply}, lambda: console.print(reply))
 

@@ -21,8 +21,8 @@ corerun org usage
 
 ## Which organisation
 
-A person can belong to several organisations -- their own, and a partner
-company's that invited them. A session is in one at a time:
+An account belongs to one organisation. Some people hold seats in two from
+before that rule (7 Oct 2026); a session is in one at a time:
 
 ```bash
 corerun org list                 # * marks the current one
@@ -51,10 +51,21 @@ corerun org members cancel-invite 3f2a91c0
 ```
 
 `add` invites somebody who has never signed in; they get the role when they
-first do, with that address. People from another company keep signing in
-through their own company's directory: the invitation gives them a seat here,
-and they reach it with `corerun org switch` or the console's organisation
-switcher. An invitation expires; `invites` shows when.
+first do, with that address. An invitation expires; `invites` shows when.
+
+Somebody who belongs to another organisation -- a personal account (Google,
+GitHub, a sign-in code) included -- cannot be added: `add` answers that they
+belong to another organisation, and an invitation to them is not taken up.
+Access across organisations is not available yet. Each refusal is in the
+audit trail (`corerun org audit --category people`, action `member.refused`).
+
+Whether workspaces may invite new people at all is the organisation's
+switch:
+
+```bash
+corerun org members new-people        # on or off
+corerun org members new-people off    # only people already in the organisation
+```
 
 `remove` takes one workspace's role away. It does not take away their seat
 or their roles elsewhere, and it does not stop what they already started --
@@ -109,7 +120,12 @@ corerun org sso add "Acme Entra" --type entra \
 corerun org sso default "Acme Entra"
 ```
 
-`--type` is `entra`, `google`, `okta`, `auth0`, `github`, `local` or `custom`.
+`--type` is `entra`, `google`, `okta`, `auth0`, `local` or `custom`: an
+organisation's provider speaks OpenID Connect, so GitHub is refused (people
+still sign in with the platform's own GitHub button). On the hosted edition an
+organisation's own provider, its domains and requiring its sign-in need a plan
+with SSO (Enterprise); on a plan without it they are refused (`plan_forbids`)
+-- that is a plan change for the human, not something to retry.
 The provider's application must allow `https://<console address>/auth/callback`
 as a redirect URI. The issuer is checked before anything is saved.
 `--domain` is the email domain it answers for (public domains such as gmail.com
@@ -165,8 +181,9 @@ administrator is told.
 It ends command-line sessions at those domains at once (browser sessions at
 their expiry), so confirm with the human first and make sure the provider works
 (a passing test sign-in) -- otherwise the domain's people are locked out.
-Break-glass is exempt. Hosted edition only; a single-tenant install has nobody
-else's buttons to close.
+Break-glass is exempt. It works on every edition: on a single-tenant install it
+closes passwords, sign-in codes and whatever public buttons the installation
+offers.
 
 **A client secret expires.** When sign-in suddenly fails for everyone, the
 secret is the first suspect:
@@ -328,14 +345,19 @@ corerun org audit --since 7d                       # newest first
 corerun org audit --actor ana@example.com --since 30d
 corerun org audit --outcome denied --since 24h     # what was refused, and why
 corerun org audit --action signin
+corerun org audit --category agents --agent support-bot --since 7d   # one agent: what it did, what was changed
+corerun org audit --category agent_network --action mcp_server.network --since 24h   # where custom MCP servers connected, and what was refused
+corerun org audit --category people --csv people.csv                 # as a file, up to 10,000 events
 ```
 
 The same events can go to the organisation's own SIEM as they happen:
 
 ```bash
 corerun org audit add splunk --kind webhook \
-  --address https://splunk.example.com:8088/services/collector/raw --token-env HEC_TOKEN
+  --address https://splunk.example.com:8088/services/collector/raw --token-env HEC_TOKEN --format ocsf
 corerun org audit add qradar --kind syslog --address siem.example.com:6514 --format cef
+corerun org audit set splunk --category agent_network --category agent_approvals   # only these
+corerun org audit set splunk --everything --format json
 corerun org audit exports
 corerun org audit test splunk
 corerun org audit disable splunk        # pause

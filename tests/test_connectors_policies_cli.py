@@ -153,9 +153,36 @@ def test_a_policy_is_created_from_yaml(wire, tmp_path):
     result = runner.invoke(_app(), ["policies", "create", "careful", "-f", str(rules)])
     assert result.exit_code == 0, result.output
     assert _body(_sent(seen, "POST", "/api/v1/policies")) == {
-        "name": "careful", "enabled": True,
+        "name": "careful", "enabled": True, "kind": "tools",
         "rules": [{"name": "ask-writes", "effect": "ask", "match": {"action": ["create", "delete"]}}],
     }
+
+
+def test_a_network_policy_takes_the_networks_fields(wire, tmp_path):
+    seen, answers = wire
+    answers[("POST", "/policies")] = {**CAREFUL, "name": "packages", "kind": "network"}
+    rules = tmp_path / "packages.yaml"
+    rules.write_text("- name: pypi\n  effect: allow\n  match:\n    host: [pypi.org]\n    port: ['443']\n")
+    result = runner.invoke(_app(), ["policies", "create", "packages", "-f", str(rules), "--network"])
+    assert result.exit_code == 0, result.output
+    body = _body(_sent(seen, "POST", "/api/v1/policies"))
+    assert body["kind"] == "network" and body["rules"][0]["match"] == {"host": ["pypi.org"], "port": ["443"]}
+    # A tool's field is not a network rule's, and the other way about.
+    seen.clear()
+    rules.write_text("- name: x\n  effect: allow\n  match:\n    namespace: [prod]\n")
+    result = runner.invoke(_app(), ["policies", "create", "bad", "-f", str(rules), "--network"])
+    assert result.exit_code == 1 and "unknown field 'namespace'" in result.output and not seen
+    rules.write_text("- name: x\n  effect: allow\n  match:\n    host: [pypi.org]\n")
+    result = runner.invoke(_app(), ["policies", "create", "bad", "-f", str(rules)])
+    assert result.exit_code == 1 and "unknown field 'host'" in result.output and not seen
+
+
+def test_network_policies_are_listed_by_kind(wire):
+    seen, answers = wire
+    answers[("GET", "/policies")] = {"policies": []}
+    result = runner.invoke(_app(), ["policies", "list", "--network"])
+    assert result.exit_code == 0, result.output
+    assert _sent(seen, "GET", "/api/v1/policies").url.params.get("kind") == "network"
 
 
 @pytest.mark.parametrize("text, says", [

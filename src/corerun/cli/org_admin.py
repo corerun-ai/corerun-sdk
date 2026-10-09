@@ -19,8 +19,12 @@ from corerun.cli import output
 console = output.console
 
 members_app = typer.Typer(help="People: seats, workspace roles and invitations")
-sso_app = typer.Typer(help="Identity providers the organisation signs in with")
-domains_app = typer.Typer(help="Email domains that send people to the organisation's sign-in")
+sso_app = typer.Typer(
+    help="Identity providers the organisation signs in with (hosted: plans with SSO, Enterprise)"
+)
+domains_app = typer.Typer(
+    help="Email domains that send people to the organisation's sign-in (hosted: plans with SSO)"
+)
 accounts_app = typer.Typer(help="Service accounts: machines that act for the organisation")
 license_app = typer.Typer(help="The installation's licence")
 quota_app = typer.Typer(help="Each workspace's own limits, under the plan's")
@@ -84,6 +88,8 @@ def show():
         console.print(f"  id:     {answer.get('id')}")
         console.print(f"  plan:   {plan}")
         console.print(f"  active: {'yes' if answer.get('is_active') else 'no'}")
+        invites = "yes" if answer.get("invite_new_people", True) else "no"
+        console.print(f"  workspaces may invite new people: {invites}")
         if answer.get("pending_deletion_at"):
             console.print(f"  [red]deletion scheduled for {answer['pending_deletion_at']}[/red]")
 
@@ -124,7 +130,9 @@ def members_add(
 ):
     """
     Give somebody a role in a workspace. Somebody without an account is
-    invited instead, and gets the role when they first sign in.
+    invited instead, and gets the role when they first sign in -- unless the
+    organisation has turned inviting new people off. Somebody who belongs
+    to another organisation is refused.
 
     Example:
         corerun org members add sara@acme.com research --role engineer
@@ -140,6 +148,35 @@ def members_add(
             else f"[green]{email}[/green] is {role} in {workspace}"
         ),
     )
+
+
+@members_app.command("new-people")
+def members_new_people(
+    setting: Optional[str] = typer.Argument(None, help="on or off; leave out to see it"),
+):
+    """
+    Whether workspace administrators may invite people who are not in the
+    organisation yet. Off, a workspace is given only people already here.
+    People from other organisations, personal accounts included, are never
+    added: access across organisations is not available yet.
+
+    Example:
+        corerun org members new-people off
+    """
+    org = _org()
+    if setting is None:
+        answer = org.info()
+    elif setting in ("on", "off"):
+        answer = _do(org.set_invite_new_people, setting == "on")
+    else:
+        raise output.fail("on or off")
+    on = answer.get("invite_new_people", True)
+    said = (
+        "Workspaces may invite new people."
+        if on
+        else "Workspaces may add only people already in the organisation."
+    )
+    output.emit({"invite_new_people": on}, lambda: console.print(said))
 
 
 @members_app.command("remove")
@@ -274,7 +311,9 @@ def sso_require(
 @sso_app.command("add")
 def sso_add(
     name: str = typer.Argument(..., help="What people see on the sign-in page"),
-    provider_type: str = typer.Option(..., "--type", "-t", help="entra, google, okta, auth0, github, local or custom"),
+    provider_type: str = typer.Option(
+        ..., "--type", "-t", help="entra, google, okta, auth0, local or custom (OpenID Connect)"
+    ),
     issuer_url: Optional[str] = typer.Option(None, "--issuer", help="OIDC issuer URL"),
     client_id: Optional[str] = typer.Option(None, "--client-id"),
     client_secret: Optional[str] = typer.Option(None, "--client-secret", help="Stored encrypted; never shown again"),

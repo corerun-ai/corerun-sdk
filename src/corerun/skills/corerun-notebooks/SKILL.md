@@ -26,8 +26,9 @@ corerun notebooks create trainer --compute <target> --gpu 1 --profile <profile> 
 
 Useful flags: `--gpu N`, `--profile <profile>` (Kubernetes), `-d <dataset>`
 (repeatable; mounts the dataset), `-e NAME=VALUE` and `--secret NAME=VALUE`
-(repeatable; a secret is hidden after creation), `--workspace-env <id>` for a
-variable the workspace already holds, `--image` to override the default, and
+(repeatable; a secret is hidden after creation; the workspace's own variables
+are always there, and these win over one of the same name), `--image` to
+override the default, and
 `--visibility shared` to open it to the whole workspace from the start.
 Without `--wait` the command returns while the notebook is still starting;
 `corerun notebooks wait <notebook>` picks it up from there.

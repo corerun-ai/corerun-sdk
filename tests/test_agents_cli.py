@@ -140,7 +140,7 @@ def test_tools_set_refuses_tool_policies_on_a_cluster(wire):
 
 def test_policy_set_reads_rules_from_yaml(wire, tmp_path):
     seen, answers = wire
-    answers[("PUT", f"/agents/{AGENT_ID}/policy")] = lambda r: httpx.Response(
+    answers[("PUT", f"/agentguard/agents/{AGENT_ID}/policy")] = lambda r: httpx.Response(
         200, json={"rules": json.loads(r.content)["rules"], "default": False}
     )
     rules = tmp_path / "rules.yaml"
@@ -158,7 +158,7 @@ def test_policy_set_reads_rules_from_yaml(wire, tmp_path):
 
 def test_policy_set_default_sends_no_rules(wire):
     seen, answers = wire
-    answers[("PUT", f"/agents/{AGENT_ID}/policy")] = {"rules": [], "default": True}
+    answers[("PUT", f"/agentguard/agents/{AGENT_ID}/policy")] = {"rules": [], "default": True}
     result = runner.invoke(agents_cli.app, ["policy-set", "support-bot", "--default"])
     assert result.exit_code == 0, result.output
     assert _body(seen, "PUT", "/policy") == {"rules": []}
@@ -228,3 +228,189 @@ def test_a_refusal_is_said_not_thrown(wire):
     result = runner.invoke(agents_cli.app, ["delete", "support-bot", "--yes"])
     assert result.exit_code == 1
     assert "creator" in result.output and "Traceback" not in result.output
+
+
+# ── the network ──────────────────────────────────────────────────────────────
+
+
+def test_refused_destinations_are_listed_with_the_agents_mode(wire):
+    seen, answers = wire
+    answers[("GET", f"/agents/{AGENT_ID}")] = {**AGENT, "network": "report"}
+    answers[("GET", f"/agentguard/agents/{AGENT_ID}/network/refused")] = {"destinations": [
+        {"host": "example.com", "port": "443", "times": 3, "last": "2026-10-05T09:12:00Z"},
+        {"host": "registry.npmjs.org", "port": "443", "times": 1,
+         "last": "2026-10-05T08:00:00Z", "would": True},
+    ]}
+    result = runner.invoke(agents_cli.app, ["network", "support-bot"])
+    assert result.exit_code == 0, result.output
+    assert "reported, not enforced" in result.output
+    assert "example.com:443" in result.output and "registry.npmjs.org:443" in result.output
+
+
+def test_allowing_a_destination_keeps_the_agents_other_rules(wire):
+    seen, answers = wire
+    own = [{"name": "Python packages", "effect": "allow",
+            "match": {"host": ["pypi.org"], "port": ["443"]}}]
+    answers[("GET", f"/agentguard/agents/{AGENT_ID}/policy")] = {"rules": own, "default": False}
+    answers[("PUT", f"/agentguard/agents/{AGENT_ID}/policy")] = lambda r: httpx.Response(
+        200, json=json.loads(r.content))
+    result = runner.invoke(agents_cli.app, ["network-allow", "support-bot", "Example.com:8443"])
+    assert result.exit_code == 0, result.output
+    put = [r for r in seen if r.method == "PUT" and r.url.path.endswith("/policy")][-1]
+    assert put.url.params.get("kind") == "network"
+    assert json.loads(put.content)["rules"] == own + [
+        {"name": "example.com", "effect": "allow",
+         "match": {"host": ["example.com"], "port": ["8443"]}},
+    ]
+
+
+def test_a_destination_already_allowed_is_not_added_twice(wire):
+    seen, answers = wire
+    own = [{"name": "pypi.org", "effect": "allow",
+            "match": {"host": ["pypi.org"], "port": ["443"]}}]
+    answers[("GET", f"/agentguard/agents/{AGENT_ID}/policy")] = {"rules": own, "default": False}
+    result = runner.invoke(agents_cli.app, ["network-allow", "support-bot", "pypi.org"])
+    assert result.exit_code == 0, result.output
+    assert not [r for r in seen if r.method == "PUT"]
+
+
+def test_enforcing_the_network_is_sent_and_nothing_else_is_blanked(wire):
+    seen, answers = wire
+    answers[("PUT", f"/agents/{AGENT_ID}")] = lambda r: httpx.Response(
+        200, json={**AGENT, "network": "enforce"})
+    result = runner.invoke(agents_cli.app, ["update", "support-bot", "--enforce-network"])
+    assert result.exit_code == 0, result.output
+    body = _body(seen, "PUT", f"/agents/{AGENT_ID}")
+    assert body["network"] == "enforce" and body["instructions"] == "Be kind."
+
+
+def test_allowing_a_host_a_rule_refuses_changes_that_rule(wire):
+    seen, answers = wire
+    own = [
+        {"name": "api.github.com", "effect": "deny",
+         "match": {"host": ["api.github.com"], "port": ["443"]}},
+        {"name": "Python packages", "effect": "ask",
+         "match": {"host": ["pypi.org", "files.pythonhosted.org"], "port": ["443"]}},
+    ]
+    answers[("GET", f"/agentguard/agents/{AGENT_ID}/policy")] = {"rules": own, "default": False}
+    answers[("PUT", f"/agentguard/agents/{AGENT_ID}/policy")] = lambda r: httpx.Response(
+        200, json=json.loads(r.content))
+    result = runner.invoke(agents_cli.app, ["network-allow", "support-bot", "pypi.org"])
+    assert result.exit_code == 0, result.output
+    rules = _body(seen, "PUT", f"/agentguard/agents/{AGENT_ID}/policy")["rules"]
+    assert rules == [
+        own[0],
+        {"name": "Python packages", "effect": "ask",
+         "match": {"host": ["files.pythonhosted.org"], "port": ["443"]}},
+        {"name": "pypi.org", "effect": "allow", "match": {"host": ["pypi.org"], "port": ["443"]}},
+    ]
+
+
+def test_allowing_a_host_a_pattern_still_refuses_is_refused(wire):
+    seen, answers = wire
+    own = [{"name": "no GitHub", "effect": "deny", "match": {"host": ["*.github.com"]}}]
+    answers[("GET", f"/agentguard/agents/{AGENT_ID}/policy")] = {"rules": own, "default": False}
+    result = runner.invoke(agents_cli.app, ["network-allow", "support-bot", "api.github.com"])
+    assert result.exit_code != 0
+    assert "no GitHub" in result.output
+    assert not [r for r in seen if r.method == "PUT"]
+
+
+def test_what_no_rule_matches_gets_is_shown_and_set(wire):
+    seen, answers = wire
+    path = f"/agentguard/agents/{AGENT_ID}/network/unmatched"
+    answers[("GET", path)] = {"effect": "", "effective": "ask",
+                              "levels": {"organization": "ask", "workspace": "", "agent": ""}}
+    answers[("PUT", path)] = lambda r: httpx.Response(200, json={
+        "effect": json.loads(r.content)["effect"], "effective": "deny",
+        "levels": {"organization": "ask", "workspace": "", "agent": "deny"}})
+    result = runner.invoke(agents_cli.app, ["network-unmatched", "support-bot"])
+    assert result.exit_code == 0, result.output
+    assert "is ask" in result.output and "organization ask" in result.output
+    result = runner.invoke(agents_cli.app, ["network-unmatched", "support-bot", "deny"])
+    assert result.exit_code == 0, result.output
+    assert _body(seen, "PUT", path) == {"effect": "deny"}
+    runner.invoke(agents_cli.app, ["network-unmatched", "support-bot", "none"])
+    assert _body(seen, "PUT", path) == {"effect": ""}
+    result = runner.invoke(agents_cli.app, ["network-unmatched", "support-bot", "maybe"])
+    assert result.exit_code != 0
+
+
+def test_an_agents_activity_by_destination(wire):
+    seen, answers = wire
+    answers[("GET", f"/agentguard/agents/{AGENT_ID}/activity")] = {
+        "summary": {"connections": 1200, "refused": 3, "asked": 1, "bytes_out": 2048, "bytes_in": 5 * 1024 * 1024},
+        "destinations": [
+            {"host": "pypi.org", "port": "443", "reached": 1200, "refused": 0, "asked": 0, "approved": 0,
+             "refused_by_person": 0, "would_refuse": 0, "bytes_out": 2048, "bytes_in": 5242880,
+             "last": "2026-10-06T09:41:00Z", "decided_by": "agent:Python packages"},
+            {"host": "r.jina.ai", "port": "443", "reached": 0, "refused": 3, "asked": 0, "approved": 0,
+             "refused_by_person": 0, "would_refuse": 0, "bytes_out": 0, "bytes_in": 0,
+             "last": "2026-10-06T09:13:00Z", "decided_by": "policy", "workaround": "a known relay"},
+        ],
+        "people": [],
+    }
+    result = runner.invoke(agents_cli.app, ["activity", "support-bot", "--since", "7d"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    asked = [r for r in seen if r.url.path.endswith("/activity")][-1]
+    assert asked.url.params["since"] == "7d" and asked.url.params["view"] == "network"
+    assert "1200 connections, 3 refused" in result.output
+    assert "pypi.org:443" in result.output and "looks like a workaround" in result.output
+
+
+def test_an_agents_timeline_is_asked_for_by_category(wire, tmp_path):
+    seen, answers = wire
+    answers[("GET", f"/agentguard/agents/{AGENT_ID}/activity")] = lambda r: (
+        httpx.Response(200, text="at,action\n2026-10-06T09:00:00Z,tool.kubernetes.delete\n")
+        if r.url.params.get("format") == "csv" else httpx.Response(200, json={"events": [], "people": []}))
+    result = runner.invoke(agents_cli.app, ["activity", "support-bot", "--timeline", "-c", "agent_tools", "-c", "agent_changes"])
+    assert result.exit_code == 0, result.output
+    asked = [r for r in seen if r.url.path.endswith("/activity")][-1]
+    assert asked.url.params["view"] == "timeline" and asked.url.params["category"] == "agent_tools,agent_changes"
+    out = tmp_path / "a.csv"
+    result = runner.invoke(agents_cli.app, ["activity", "support-bot", "--timeline", "--csv", str(out)])
+    assert result.exit_code == 0, result.output
+    assert out.read_text().startswith("at,action")
+
+
+def test_publish_as_itself_sends_service(wire):
+    seen, answers = wire
+    answers[("PUT", f"/agents/{AGENT_ID}/publication")] = {
+        "published": True, "mode": "service", "enabled": True, "answers_as": "a1",
+    }
+    result = runner.invoke(agents_cli.app, ["publish", "support-bot"])
+    assert result.exit_code == 0, result.output
+    assert _body(seen, "PUT", "/publication") == {"mode": "service"}
+    assert "answers as itself" in result.output
+
+
+def test_publish_as_someone_turns_their_email_into_their_id(wire):
+    seen, answers = wire
+    answers[("GET", f"/agents/{AGENT_ID}/access")] = {
+        "people": [{"user_id": SAM, "email": "sam@example.com", "access": "chat"}],
+    }
+    answers[("PUT", f"/agents/{AGENT_ID}/publication")] = {
+        "published": True, "mode": "delegate", "enabled": True,
+        "delegate_email": "sam@example.com", "waiting": "delegate_confirmation",
+    }
+    result = runner.invoke(agents_cli.app, ["publish", "support-bot", "--as", "Sam@example.com"])
+    assert result.exit_code == 0, result.output
+    assert _body(seen, "PUT", "/publication") == {"mode": "delegate", "delegate_id": SAM}
+    assert "waiting for them" in result.output
+
+
+def test_publish_as_somebody_without_the_agent_is_refused_before_asking(wire):
+    seen, answers = wire
+    answers[("GET", f"/agents/{AGENT_ID}/access")] = {"people": []}
+    result = runner.invoke(agents_cli.app, ["publish", "support-bot", "--as", "nobody@example.com"])
+    assert result.exit_code != 0
+    assert "cannot use" in result.output
+    assert not [r for r in seen if r.method == "PUT"]
+
+
+def test_unpublish(wire):
+    seen, answers = wire
+    answers[("DELETE", f"/agents/{AGENT_ID}/publication")] = lambda r: httpx.Response(204)
+    result = runner.invoke(agents_cli.app, ["unpublish", "support-bot"])
+    assert result.exit_code == 0, result.output
+    assert "unpublished" in result.output

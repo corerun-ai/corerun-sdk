@@ -270,6 +270,52 @@ def delete(name: str, workspace: Optional[str] = None) -> dict:
     return client.delete(f"/inference-endpoints/{name}", workspace=workspace)
 
 
+def sharing(name: str, workspace: Optional[str] = None) -> dict:
+    """
+    Who besides its own workspace may use an endpoint, and the organisation's
+    other workspaces it could be shared with.
+
+    Returns ``{"sharing": {"scope": ..., "workspaces": [...]}, "workspaces": [...]}``;
+    scope is ``workspace`` (its own only), ``organization`` or ``workspaces``.
+    """
+    client = get_client()
+    return client.get(f"/inference-endpoints/{name}/sharing", workspace=workspace)
+
+
+def share(
+    name: str,
+    scope: str,
+    workspaces: Optional[List[str]] = None,
+    workspace: Optional[str] = None,
+) -> dict:
+    """
+    Choose who besides its own workspace may use an endpoint. Its own
+    workspace's admins only.
+
+    Args:
+        scope: ``workspace`` (nobody else), ``organization`` (every workspace,
+            including ones made later) or ``workspaces`` (those named).
+        workspaces: with ``workspaces``, the workspaces by slug, name or ID.
+    """
+    ids: List[str] = []
+    if scope == "workspaces":
+        choices = sharing(name, workspace=workspace).get("workspaces", [])
+        for wanted in workspaces or []:
+            match = next(
+                (w for w in choices if wanted in (w.get("id"), w.get("slug"), w.get("display_name"))),
+                None,
+            )
+            if match is None:
+                raise ValueError(f"No other workspace called {wanted!r} in this organisation")
+            ids.append(match["id"])
+    client = get_client()
+    return client.put(
+        f"/inference-endpoints/{name}/sharing",
+        json={"scope": scope, "workspace_ids": ids},
+        workspace=workspace,
+    )
+
+
 def rotate_key(
     name: str, key: str = "secondary", workspace: Optional[str] = None
 ) -> dict:

@@ -260,6 +260,33 @@ def deploy_server(
         help="Turn on one of the model's published opt-in features, e.g. spec_decoding "
              "(MTP speculative decoding); repeat for several. --dry-run lists what it offers",
     ),
+    kv_cache_memory: Optional[float] = typer.Option(
+        None, "--kv-cache-memory",
+        help="Keep the KV cache beyond the GPU in this many GB of host memory (vLLM; "
+             "not on unified-memory cards such as GB10)",
+    ),
+    kv_cache_disk: Optional[str] = typer.Option(
+        None, "--kv-cache-disk",
+        help="And/or in this folder on the host, kept across restarts, "
+             "e.g. /var/lib/corerun/kvcache. --dry-run says which tiers the compute offers",
+    ),
+    kv_cache_budget: Optional[float] = typer.Option(
+        None, "--kv-cache-budget", help="GB of disk the cache may use, with --kv-cache-disk",
+    ),
+    weights_path: Optional[str] = typer.Option(
+        None, "--weights-path",
+        help="For --source registry: take the weights from this folder on the host instead, "
+             "keeping the model's name, facts and recipe. 'inference local-models' lists them",
+    ),
+    weights_hf: Optional[str] = typer.Option(
+        None, "--weights-hf",
+        help="For --source registry: take the weights from this Hugging Face id instead",
+    ),
+    replaces: Optional[str] = typer.Option(
+        None, "--replaces",
+        help="Edit a deployment: the server id this takes the place of, keeping its id, "
+             "keys and endpoint; every other setting is the ones given here",
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run",
         help="Show what it would run with -- the recipe found for the model, the engine "
@@ -309,6 +336,12 @@ def deploy_server(
             extra_args=list(arg) if arg else None,
             served_names=list(served_name) if served_name else None,
             features=list(feature) if feature else None,
+            kv_cache_memory_gb=kv_cache_memory,
+            kv_cache_disk=kv_cache_disk,
+            kv_cache_disk_budget_gb=kv_cache_budget,
+            weights_path=weights_path,
+            weights_hf=weights_hf,
+            replaces=replaces,
             dry_run=dry_run,
             wait=wait,
             timeout=timeout,
@@ -552,10 +585,26 @@ def update_server(
     served_name: Optional[List[str]] = typer.Option(
         None, "--served-name", help="A name callers ask for this model by (repeatable; replaces the list)"
     ),
+    kv_cache_memory: Optional[float] = typer.Option(
+        None, "--kv-cache-memory",
+        help="KV cache tiers, replacing what it has: GB of host memory",
+    ),
+    kv_cache_disk: Optional[str] = typer.Option(
+        None, "--kv-cache-disk", help="KV cache tiers: a folder on the host, kept across restarts",
+    ),
+    kv_cache_budget: Optional[float] = typer.Option(
+        None, "--kv-cache-budget", help="GB of disk the cache may use, with --kv-cache-disk",
+    ),
+    no_kv_cache: bool = typer.Option(
+        False, "--no-kv-cache", help="Keep the KV cache on the GPU only",
+    ),
     workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
 ):
     """
     Change how a server runs, keeping its ID, endpoint and key.
+
+    For anything else -- the model, its weights, the compute -- deploy again
+    with --replaces <server id>: every setting, decided afresh.
 
     The engine reads its flags at startup, so the workload is replaced -- but
     the server is not. Callers keep the endpoint they were given.
@@ -597,6 +646,12 @@ def update_server(
 
     features = [] if no_features else (list(feature) if feature else None)
 
+    kv_cache = None
+    if no_kv_cache:
+        kv_cache = {}
+    elif kv_cache_memory or kv_cache_disk:
+        kv_cache = inference._kv_cache(kv_cache_memory, kv_cache_disk, kv_cache_budget)
+
     changed = {
         "image": image,
         "extra_args": new_args,
@@ -607,6 +662,7 @@ def update_server(
         "enforce_eager": enforce_eager,
         "gpu_memory_util": gpu_memory_util,
         "served_model_names": served_name,
+        "kv_cache": kv_cache,
     }
     if all(value is None for value in changed.values()):
         console.print("[red]Error:[/red] nothing to change: name at least one setting")
@@ -851,6 +907,17 @@ def _print_plan(p: dict, heading: str) -> None:
     for line in (p.get("accelerator_note") or "").split("; "):
         if line.strip():
             console.print(f"  [yellow]·[/yellow] {line}")
+    if p.get("kv_cache_note"):
+        console.print(f"  KV cache:    {p['kv_cache_note']}")
+    offer = p.get("kv_cache_offer")
+    if offer:
+        tiers = [t for t in ("memory", "disk") if not offer.get(t)]
+        flags = {"memory": "--kv-cache-memory", "disk": "--kv-cache-disk"}
+        listed = ", ".join(f"{t} [dim]({flags[t]})[/dim]" for t in tiers)
+        console.print("  KV cache tiers here: " + (listed or "[dim]GPU only[/dim]"))
+        for t in ("memory", "disk"):
+            if offer.get(t):
+                console.print(f"    [dim]{t}: {offer[t]}[/dim]")
     on = set(p.get("features") or [])
     offered = p.get("opt_in") or []
     if offered:
@@ -913,6 +980,56 @@ def _edit_args(current: List[str], add: List[str], remove: List[str]) -> List[st
         else:
             result.append(g)
     return [a for g in result for a in g]
+
+
+@app.command("local-models")
+def local_models(
+    compute: str = typer.Option(..., "--compute", "-c", help="The host to look on"),
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+):
+    """
+    The model folders a bare-metal host has, to deploy from a path.
+
+    Its usual model folders, Hugging Face's cache and any its administrator
+    named in CORERUN_MODEL_DIRS. Read-only.
+
+    Example:
+        corerun inference local-models --compute gb10dgx01
+        corerun inference deploy --name q --source path --model <path> --compute gb10dgx01
+    """
+    _init_client()
+
+    import corerun.inference as inference
+
+    try:
+        found = inference.local_models(compute, workspace=workspace)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    if output.json_mode():
+        output.emit(found)
+        return
+    if not found.get("available"):
+        why = {
+            "kubernetes": "a Kubernetes cluster: the path is on nodes nothing here can look at",
+            "not_connected": "its operator is not connected",
+            "operator_too_old": "its operator predates this; update it on the host",
+            "unreachable": "its operator did not answer",
+        }.get(found.get("reason", ""), found.get("reason", "unknown"))
+        console.print(f"[yellow]Cannot list models on {compute}:[/yellow] {why}")
+        raise typer.Exit(1)
+    models = found.get("models") or []
+    if not models:
+        console.print(f"No models in {', '.join(found.get('roots') or [])}")
+        return
+    table = Table(title=f"Models on {compute}")
+    table.add_column("Path", style="cyan")
+    table.add_column("Name")
+    table.add_column("Size", justify="right")
+    for m in models:
+        size = m.get("size_bytes") or 0
+        table.add_row(m.get("path", ""), m.get("name", ""), f"{size / 1e9:.1f} GB" if size else "-")
+    console.print(table)
 
 
 @app.command("recipe")

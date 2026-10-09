@@ -107,6 +107,16 @@ def info() -> Dict[str, Any]:
     return get_client().get("/tenant/me")
 
 
+def set_invite_new_people(on: bool) -> Dict[str, Any]:
+    """
+    Whether workspace administrators may invite people who are not in the
+    organisation yet. Off, a workspace is given only people the
+    organisation already has. Nobody who belongs to another organisation --
+    a personal account included -- is added either way.
+    """
+    return get_client().put("/tenant/me", json={"invite_new_people": on})
+
+
 def workspaces() -> List[Dict[str, Any]]:
     """Every workspace in the organisation, whether or not you are in it."""
     return get_client().get("/tenant/workspaces").get("workspaces") or []
@@ -171,7 +181,7 @@ def cancel_invite(invite_id: str) -> Dict[str, Any]:
 
 # --- Sign-in providers -------------------------------------------------------
 
-PROVIDER_TYPES = ("entra", "google", "okta", "auth0", "github", "local", "custom")
+PROVIDER_TYPES = ("entra", "google", "okta", "auth0", "local", "custom")
 
 
 def sign_in_providers() -> List[Dict[str, Any]]:
@@ -483,20 +493,78 @@ def audit_events(
     outcome: Optional[str] = None,
     limit: int = 100,
     before: Optional[str] = None,
+    category: Optional[List[str]] = None,
+    agent: Optional[str] = None,
+    workspace: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     One page of the audit trail, newest first: ``{"events": [...], "next_before": ...}``.
 
     ``since`` is RFC 3339 or a duration back from now (``24h``, ``7d``);
     ``actor`` and ``action`` match part of the value; ``outcome`` is
-    ``success``, ``denied`` or ``failure``. Pass ``next_before`` back as
-    ``before`` for the page after.
+    ``success``, ``denied`` or ``failure``. ``category`` narrows it to
+    categories (``signin``, ``people``, ``settings``, ``gateway``,
+    ``agent_network``, ``agent_tools``, ``agent_approvals``, ``agent_files``,
+    ``agent_sandboxes``, and ``agent_changes`` for changes made to agents);
+    ``agent`` to one agent's events, by id; ``workspace`` to one workspace's.
+    Pass ``next_before`` back as ``before`` for the page after.
     """
-    params: Dict[str, Any] = {"limit": limit}
-    for key, value in (("since", since), ("until", until), ("actor", actor), ("action", action), ("outcome", outcome), ("before", before)):
+    return get_client().get(
+        "/tenant/audit",
+        params=_audit_params(
+            since,
+            until,
+            actor,
+            action,
+            outcome,
+            category,
+            agent,
+            workspace,
+            limit=limit,
+            before=before,
+        ),
+    )
+
+
+def audit_csv(
+    since: Optional[str] = "24h",
+    until: Optional[str] = None,
+    actor: Optional[str] = None,
+    action: Optional[str] = None,
+    outcome: Optional[str] = None,
+    category: Optional[List[str]] = None,
+    agent: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> str:
+    """The audit trail as CSV text, filtered as ``audit_events`` is (up to 10,000 events)."""
+    params = _audit_params(since, until, actor, action, outcome, category, agent, workspace)
+    params["format"] = "csv"
+    return get_client().get("/tenant/audit", params=params, response_type="text")
+
+
+def audit_agents() -> List[Dict[str, Any]]:
+    """The organisation's agents, by name with their workspaces, for reading the trail by agent."""
+    return get_client().get("/tenant/audit/agents").get("agents", []) or []
+
+
+def _audit_params(
+    since, until, actor, action, outcome, category, agent, workspace, **more
+) -> Dict[str, Any]:
+    params: Dict[str, Any] = {k: v for k, v in more.items() if v}
+    for key, value in (
+        ("since", since),
+        ("until", until),
+        ("actor", actor),
+        ("action", action),
+        ("outcome", outcome),
+        ("agent", agent),
+        ("workspace", workspace),
+    ):
         if value:
             params[key] = value
-    return get_client().get("/tenant/audit", params=params)
+    if category:
+        params["category"] = ",".join(category)
+    return params
 
 
 def audit_exports() -> List[Dict[str, Any]]:
@@ -520,18 +588,45 @@ def add_audit_export(
     format: Optional[str] = None,
     header: Optional[str] = None,
     token: Optional[str] = None,
+    categories: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Add a destination: ``webhook`` (an HTTPS URL taking JSON batches) or
-    ``syslog`` (``host:port``; transport ``tcp+tls``, ``tcp`` or ``udp``;
-    format ``json`` or ``cef``). A test event is sent first, and a
-    destination that does not take it is refused.
+    ``syslog`` (``host:port``; transport ``tcp+tls``, ``tcp`` or ``udp``).
+    ``format`` is ``json`` (corerun's record, the default), ``ocsf`` (the Open
+    Cybersecurity Schema Framework) or, for syslog, ``cef``. ``categories``
+    limits what it is sent (``AUDIT_CATEGORIES``); none is everything. A test
+    event is sent first, and a destination that does not take it is refused.
     """
     body: Dict[str, Any] = {"name": name, "kind": kind, "address": address}
     for key, value in (("transport", transport), ("format", format), ("header", header), ("token", token)):
         if value:
             body[key] = value
+    if categories:
+        body["categories"] = list(categories)
     return get_client().post("/tenant/audit/exports", json=body)
+
+
+#: What a destination may be sent.
+AUDIT_CATEGORIES = (
+    "signin", "people", "settings", "gateway", "agent_network",
+    "agent_tools", "agent_approvals", "agent_files", "agent_sandboxes",
+)
+
+
+def update_audit_export(
+    ref: str, *, format: Optional[str] = None, categories: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    Change a destination's format or categories (``[]`` is everything). A
+    changed format is tested before it is saved.
+    """
+    body: Dict[str, Any] = {}
+    if format:
+        body["format"] = format
+    if categories is not None:
+        body["categories"] = list(categories)
+    return get_client().put(f"/tenant/audit/exports/{_export_id(ref)}", json=body)
 
 
 def test_audit_export(ref: str) -> Dict[str, Any]:

@@ -1,6 +1,6 @@
 ---
 name: corerun-models
-description: Work with the corerun model registry — list and create registered models, import from HuggingFace, push and pull versions, stage them through staging and production, and set aliases like champion. Use when asked to register, import, promote, fetch or version a model.
+description: Work with the corerun model registry — publish catalogue models into it, list and create registered models, import from HuggingFace, push and pull versions, stage them through staging and production, and set aliases like champion. Use when asked to publish, register, import, promote, fetch or version a model.
 ---
 
 # corerun model registry
@@ -13,9 +13,35 @@ corerun models create <name> --framework <framework>
 corerun models delete <name>
 ```
 
+## Publishing from the catalogue
+
+The registry is what a workspace deploys from; the catalogue is every model the
+platform knows how to serve. Administrators publish catalogue builds into the
+registry:
+
+```bash
+corerun catalogue fit --search qwen --fits       # builds, and how each fits this workspace's computes
+corerun catalogue publish qwen3-8-27b-nvfp4 --as qwen38
+corerun inference deploy --name qwen --source registry --model qwen38 --compute <host>
+```
+
+`catalogue fit` lists one build per model and quantization (the model's own
+publisher first, then nvidia, unsloth, inferact) with the publisher's card
+count for each compute's card; `?` means the publisher gives no figure for that
+card, not that it does not fit. A published model is a **remote version**: it
+points at the weights on Hugging Face and holds no copy -- they are fetched
+when it is deployed -- and carries the catalogue's facts and recipe. `publish`
+is reserved as a model name.
+
+Publishing needs an administrator of the workspace or organisation, on a plan
+with model publishing; on the hosted Free plan the platform publishes the
+models organisations deploy, and they appear in the registry listed as the
+platform's. If publishing is refused, say why rather than importing the
+weights instead -- an import is a copy, with the storage that costs.
+
 ## Getting a model in
 
-Importing is the usual way, and the platform does the transfer — weights go
+Importing is the usual way to bring in weights of your own, and the platform does the transfer — weights go
 from the source straight into the registry without passing through this
 machine. That is what makes it work from a shell that could not hold the file.
 

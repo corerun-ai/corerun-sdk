@@ -83,7 +83,31 @@ engine on its own — there is no need to pass them again.
 
 Those three sources are all there is. A model a training run produced reaches
 serving through the registry: `corerun runs register` or `corerun models
-from-job`, then `--source registry`.
+from-job`, then `--source registry`. Catalogue models reach it by being
+published into the registry (`corerun catalogue publish`, in the
+[corerun-models](../corerun-models/SKILL.md) skill); prefer deploying a
+registry model when one exists.
+
+**Weights from elsewhere.** A registry model can take its weights from a folder
+already on the host (`--weights-path /data/models/x`) or from other Hugging
+Face weights (`--weights-hf org/name`), keeping its name, facts and recipe.
+`corerun inference local-models --compute <host>` lists the model folders a
+bare-metal host has (its model folders and Hugging Face cache) -- read-only,
+and only on hosts, not Kubernetes clusters. A folder on one host does not
+exist on another: pick the path from the host you deploy to.
+
+**KV cache beyond the GPU** (vLLM 0.22+), in tiers on the one machine:
+`--kv-cache-memory <GB>` keeps blocks the GPU has no room for in host memory
+for the engine's life; `--kv-cache-disk <folder> --kv-cache-budget <GB>` also
+keeps them in a folder on the host, across restarts and redeploys of the same
+model, the oldest removed past the budget. Both together is allowed on a
+discrete card. On a card whose memory is unified with the host's (GB10, DGX
+Spark) host memory is refused -- it is the GPU's own -- and only the disk is
+offered. `--dry-run` lists the tiers this compute offers and why a tier is not.
+It pays off on large models with long, repeated prompts (on Qwen3.8-27B a
+13,000-token prompt went from 8 s to 0.45 s after a restart); on a small model
+it buys nothing. The folder is a cache on the human's disk: ask before choosing
+a large budget.
 
 `--endpoint <name>` puts the server behind an existing address instead of
 creating one named after the deployment. **When the human names an endpoint,
@@ -117,7 +141,24 @@ corerun inference update <server-id> --feature spec_decoding
 corerun inference update <server-id> --add-arg --max-num-seqs --add-arg 16
 corerun inference update <server-id> --remove-arg --max-num-seqs
 corerun inference update <server-id> --endpoint chat   # move it; no restart
+corerun inference update <server-id> --kv-cache-disk /var/lib/corerun/kvcache --kv-cache-budget 200
+corerun inference update <server-id> --no-kv-cache
+corerun inference restart <server-id>              # the same settings, engine restarted
 ```
+
+**Anything `update` does not cover** -- another model or version, other
+weights, another compute -- is an edit: deploy again with every setting and
+`--replaces <server-id>`. It is decided afresh, exactly as a new deployment
+(`--dry-run` works), and keeps the server's ID, keys and endpoint; its own GPUs
+and name are not counted against it. The console's **Edit** on an endpoint's
+model is the same thing, with the form filled in. `--kv-cache-*` on `update`
+replace the tiers it has; `--no-kv-cache` keeps the cache on the GPU.
+
+`restart` on a bare-metal host restarts the engine in place: the same instance,
+its weights and its KV-cache folder, so a server with a disk tier comes back
+warm. A server deployed before that was possible is refused with "stop and
+start it instead"; an operator that predates it is refused too -- say so to the
+human rather than retrying.
 
 The engine reads its flags at start, so an update **redeploys**: the server
 keeps its ID, endpoint and keys, but it stops answering while the new one loads
